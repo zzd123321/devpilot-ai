@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+
+set -eu
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+properties_file="$script_dir/.mvn/wrapper/maven-wrapper.properties"
+
+if [ -n "${MAVEN_HOME:-}" ] && [ -x "$MAVEN_HOME/bin/mvn" ]; then
+  exec "$MAVEN_HOME/bin/mvn" "$@"
+fi
+
+if command -v mvn >/dev/null 2>&1; then
+  exec mvn "$@"
+fi
+
+distribution_url="$(sed -n 's/^distributionUrl=//p' "$properties_file" | tr -d '\r')"
+distribution_name="${distribution_url##*/}"
+distribution_dir="${distribution_name%-bin.zip}"
+wrapper_home="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists/$distribution_dir"
+maven_home="$wrapper_home/apache-maven"
+
+if [ ! -x "$maven_home/bin/mvn" ]; then
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+  mkdir -p "$wrapper_home"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$distribution_url" -o "$tmp_dir/$distribution_name"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$distribution_url" -O "$tmp_dir/$distribution_name"
+  else
+    echo "curl or wget is required to download Maven." >&2
+    exit 1
+  fi
+
+  unzip -q "$tmp_dir/$distribution_name" -d "$tmp_dir"
+  rm -rf "$maven_home"
+  mv "$tmp_dir/$distribution_dir" "$maven_home"
+fi
+
+exec "$maven_home/bin/mvn" "$@"
+
