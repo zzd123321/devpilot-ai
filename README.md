@@ -17,6 +17,10 @@ devpilot-ai/
 - V3: AI project assistant tools, such as API design, Vue page scaffolding, and test-case generation.
 - V4: Permissions, usage statistics, prompt templates, async document processing, and Docker deployment.
 
+## Learning Notes
+
+See [docs/learning-roadmap.md](docs/learning-roadmap.md) for the step-by-step learning plan and project notes.
+
 ## Local Development
 
 ### Backend

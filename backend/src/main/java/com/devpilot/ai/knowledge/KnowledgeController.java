@@ -13,11 +13,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/knowledge-bases")
 public class KnowledgeController {
 
+    private final KnowledgeService knowledgeService;
+
+    public KnowledgeController(KnowledgeService knowledgeService) {
+        this.knowledgeService = knowledgeService;
+    }
+
     @GetMapping
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
-        return List.of(
-                new KnowledgeBaseSummary("demo", "Demo Knowledge Base", 0)
-        );
+        return knowledgeService.listKnowledgeBases();
     }
 
     @PostMapping("/{knowledgeBaseId}/ask")
@@ -25,11 +29,6 @@ public class KnowledgeController {
             @PathVariable String knowledgeBaseId,
             @Valid @RequestBody AskKnowledgeRequest request
     ) {
-        return new AskKnowledgeResponse(
-                "This is a placeholder answer for knowledge base `%s`: %s"
-                        .formatted(knowledgeBaseId, request.question()),
-                List.of(new SourceReference("README.md", "Project overview", 0.92))
-        );
+        return knowledgeService.ask(knowledgeBaseId, request.question());
     }
 }
-
