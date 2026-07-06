@@ -21,6 +21,7 @@ export interface KnowledgeDocumentSummary {
   contentType: string | null
   sizeBytes: number
   createdAt: string
+  chunkCount: number
 }
 
 export async function listKnowledgeBases() {

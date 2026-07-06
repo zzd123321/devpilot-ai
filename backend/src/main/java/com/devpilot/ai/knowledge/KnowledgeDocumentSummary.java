@@ -7,7 +7,7 @@ public record KnowledgeDocumentSummary(
         String filename,
         String contentType,
         long sizeBytes,
-        Instant createdAt
+        Instant createdAt,
+        long chunkCount
 ) {
 }
-

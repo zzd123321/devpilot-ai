@@ -284,6 +284,12 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.document-item p {
+  color: #69756b;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
 .document-item span {
   color: #69756b;
   flex: 0 0 auto;

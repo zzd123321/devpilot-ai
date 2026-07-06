@@ -306,6 +306,8 @@ http://localhost:8080/api/health
 - [x] 实现统一错误响应与前端错误提示
 - [x] 接入 PostgreSQL、JPA 与 Flyway
 - [x] 实现文档上传与文档列表
+- [x] 实现文档文本切分 chunk
+- [x] 实现关键词检索版问答来源返回
 
 ## 学习笔记 01：前后端请求链路
 
@@ -2077,6 +2079,519 @@ await loadDocuments()
 - 多次数据库写入需要考虑事务。
 - `FormData` 是前端上传文件的常用方式。
 - Flyway SQL 和 JPA Entity 不一致时，`ddl-auto: validate` 会帮你发现问题。
+
+## 学习笔记 08：文档切分 Chunk
+
+本节目标：在文档上传后，把原始文本切成多个小片段，并保存到 `document_chunks` 表，为后续 RAG 检索做准备。
+
+### 为什么不能直接拿整篇文档问 AI
+
+如果用户上传的是一篇很长的需求文档，直接把整篇文档塞给模型会有几个问题：
+
+- 模型上下文窗口有限，长文档可能放不下。
+- 即使放得下，也会浪费 token。
+- 问一个小问题时，模型不需要看完整文档。
+- 长上下文里相关信息容易被稀释。
+- 后续做向量检索时，检索单位应该是片段，不是整篇文档。
+
+所以 RAG 的常见做法是：
+
+```text
+文档
+  -> 解析文本
+  -> 切分 chunk
+  -> 为每个 chunk 生成 embedding
+  -> 用户提问时检索相关 chunk
+  -> 把相关 chunk 塞进 Prompt
+  -> 让模型回答
+```
+
+本节完成的是其中的：
+
+```text
+解析文本 -> 切分 chunk -> 保存 chunk
+```
+
+embedding 和向量检索放到后面。
+
+### 数据库表设计
+
+新增 Flyway 脚本：
+
+```text
+backend/src/main/resources/db/migration/V3__create_document_chunks.sql
+```
+
+表结构：
+
+```sql
+create table document_chunks (
+    id varchar(36) primary key,
+    knowledge_base_id varchar(36) not null,
+    document_id varchar(36) not null,
+    chunk_index integer not null,
+    content text not null,
+    char_start integer not null,
+    char_end integer not null,
+    created_at timestamp not null default current_timestamp
+);
+```
+
+字段说明：
+
+- `knowledge_base_id`：chunk 属于哪个知识库，方便以后按知识库检索。
+- `document_id`：chunk 来自哪个文档，方便返回引用来源。
+- `chunk_index`：chunk 在原文中的顺序。
+- `content`：chunk 文本内容。
+- `char_start` / `char_end`：chunk 在原文中的字符位置。
+
+为什么同时保存 `knowledge_base_id` 和 `document_id`：
+
+- 只保存 `document_id` 也能通过文档反查知识库。
+- 但后续向量检索通常会按知识库过滤，直接保存 `knowledge_base_id` 查询更方便。
+
+### TextChunker 的作用
+
+新增：
+
+```text
+TextChunker.java
+```
+
+它专门负责文本切分：
+
+```java
+@Component
+public class TextChunker {
+    private static final int CHUNK_SIZE = 800;
+    private static final int CHUNK_OVERLAP = 120;
+}
+```
+
+为什么不直接把切分逻辑写在 `KnowledgeService` 里：
+
+- Service 已经负责上传流程。
+- 切分策略以后会变化。
+- 独立组件更容易测试和替换。
+- 后续可以从简单字符切分升级为 Markdown 标题切分、段落切分、token 切分。
+
+### chunk size 是什么
+
+当前：
+
+```java
+private static final int CHUNK_SIZE = 800;
+```
+
+意思是每个 chunk 最多大约 800 个字符。
+
+为什么不是越大越好：
+
+- 太大：检索结果不够精准。
+- 太小：上下文不完整，语义容易断。
+
+现在用 800 字符只是练习阶段的简单策略。后面接模型时，更合理的是按 token 估算。
+
+### overlap 是什么
+
+当前：
+
+```java
+private static final int CHUNK_OVERLAP = 120;
+```
+
+overlap 表示相邻 chunk 之间保留一段重复内容。
+
+例如：
+
+```text
+chunk 1: 0    -> 800
+chunk 2: 680  -> 1480
+```
+
+为什么要重叠：
+
+- 重要信息可能刚好在边界处。
+- 如果完全硬切，句子或段落会被切断。
+- overlap 能降低边界丢信息的概率。
+
+代价是：
+
+- 存储会多一点。
+- embedding 成本会多一点。
+- 检索结果可能有重复。
+
+这是 RAG 工程里非常常见的取舍。
+
+### 上传后的新流程
+
+现在上传文档的后端流程变成：
+
+```text
+KnowledgeService.uploadDocument
+  -> 校验知识库存在
+  -> 校验文件
+  -> 读取文件内容
+  -> 保存 knowledge_documents
+  -> TextChunker.split
+  -> 保存 document_chunks
+  -> 更新知识库 documentCount
+  -> 返回 KnowledgeDocumentSummary
+```
+
+代码片段：
+
+```java
+KnowledgeDocument savedDocument = documentRepository.save(document);
+List<DocumentChunk> chunks = buildChunks(savedDocument);
+chunkRepository.saveAll(chunks);
+knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
+return toDocumentSummary(savedDocument);
+```
+
+这里仍然在 `@Transactional` 方法里。
+
+原因是这三件事应该作为一个整体：
+
+- 保存文档。
+- 保存 chunk。
+- 更新文档数量。
+
+如果中间任何一步失败，都应该回滚。
+
+### 为什么前端显示 chunk 数
+
+`KnowledgeDocumentSummary` 新增：
+
+```java
+long chunkCount
+```
+
+前端文档列表现在显示：
+
+```text
+example.md
+3 chunks
+```
+
+这有两个作用：
+
+- 给用户反馈：系统已经处理了文档。
+- 给开发者反馈：切分逻辑确实跑了。
+
+后续接 embedding 时，我们还可以显示处理状态：
+
+```text
+Uploaded -> Chunked -> Embedded -> Ready
+```
+
+### 当前切分策略的局限
+
+现在是按字符长度切分：
+
+```java
+int end = Math.min(start + CHUNK_SIZE, normalizedText.length());
+String content = normalizedText.substring(start, end).trim();
+```
+
+它简单可靠，但不够聪明。
+
+可能的问题：
+
+- 会切断 Markdown 标题和正文。
+- 会切断代码块。
+- 会切断列表。
+- 对中文、英文、代码的 token 长度没有区别处理。
+
+后续可以优化为：
+
+- 优先按 Markdown 标题切。
+- 再按段落切。
+- 再按 token 数切。
+- 保留代码块完整性。
+
+但工程上先用简单版本打通链路是合理的。
+
+### 本节你应该掌握
+
+- RAG 通常以 chunk 为检索单位，不直接检索整篇文档。
+- chunk size 影响检索精准度和上下文完整度。
+- overlap 用于减少边界信息丢失。
+- chunk 要保存来源文档和原文位置，后续才能返回引用。
+- 切分策略应该独立成组件，方便后续替换。
+- 当前只是字符切分，后续会升级到更适合 Markdown/代码文档的切分策略。
+
+## 学习笔记 09：关键词检索版问答
+
+本节目标：先不接 AI，用简单关键词检索从 chunks 中找到相关片段，并把这些片段作为 sources 返回给前端。
+
+### 为什么先做关键词检索
+
+RAG 可以拆成两个核心步骤：
+
+```text
+Retrieval：检索相关上下文
+Generation：基于上下文生成回答
+```
+
+很多初学者会急着先接 AI，但这会让问题变复杂：
+
+- 不知道回答差是因为检索差，还是模型生成差。
+- 不知道 Prompt 设计有没有问题。
+- 不知道文档切分是否合理。
+- 不知道 sources 是否真的来自知识库。
+
+所以我们先做一个不用 AI 的版本：
+
+```text
+用户提问
+  -> 从 document_chunks 中做关键词匹配
+  -> 找出 top 5 chunk
+  -> 返回临时回答和 sources
+```
+
+这一步练的是 RAG 里的 R，也就是 Retrieval。
+
+### 当前 ask 流程
+
+现在 `KnowledgeService.ask` 不再返回固定占位内容，而是：
+
+```text
+确认知识库存在
+  -> retrieveRelevantChunks
+  -> chunk 打分
+  -> 取 top 5
+  -> 转成 SourceReference
+  -> 返回 AskKnowledgeResponse
+```
+
+如果没有命中：
+
+```java
+return new AskKnowledgeResponse(
+        "当前知识库还没有检索到相关片段。你可以先上传 Markdown 或文本文件，再重新提问。",
+        List.of()
+);
+```
+
+如果命中：
+
+```java
+return new AskKnowledgeResponse(
+        "我先用关键词检索找到了 %d 个相关片段。下一步接入 AI 后，会把这些片段作为上下文生成自然语言回答。",
+        sources
+);
+```
+
+注意：这还不是 AI 回答，只是检索结果说明。
+
+### 检索 chunks
+
+Repository 新增：
+
+```java
+List<DocumentChunk> findAllByKnowledgeBaseId(String knowledgeBaseId);
+```
+
+JPA 方法：
+
+```java
+List<DocumentChunkEntity> findAllByKnowledgeBaseIdOrderByCreatedAtDesc(String knowledgeBaseId);
+```
+
+这表示先把某个知识库下的所有 chunks 取出来，再在 Java 内存里做简单打分。
+
+为什么现在可以这样做：
+
+- 当前是练习阶段，数据量小。
+- 逻辑简单，容易看懂。
+- 后续会替换成向量数据库检索。
+
+为什么以后不能一直这样做：
+
+- chunk 数量变多后，全部加载到内存会慢。
+- 关键词匹配不能理解语义。
+- “登录流程”和“用户认证步骤”这种同义表达可能匹配不到。
+
+### 提取搜索词
+
+当前代码：
+
+```java
+private Set<String> extractSearchTerms(String question) {
+    String normalizedQuestion = question.toLowerCase(Locale.ROOT).trim();
+    Set<String> terms = new LinkedHashSet<>();
+
+    for (String term : normalizedQuestion.split("[^\\p{IsAlphabetic}\\p{IsDigit}\\p{IsHan}]+")) {
+        if (term.length() >= 2) {
+            terms.add(term);
+        }
+    }
+
+    for (int index = 0; index < normalizedQuestion.length() - 1; index++) {
+        String term = normalizedQuestion.substring(index, index + 2).trim();
+        if (term.codePoints().allMatch(Character::isLetter)) {
+            terms.add(term);
+        }
+    }
+
+    return terms;
+}
+```
+
+这里做了两件事：
+
+1. 按标点和空白拆出词。
+2. 对中文问题额外生成相邻双字词。
+
+为什么要额外处理中文：
+
+英文通常有空格：
+
+```text
+login flow
+```
+
+中文通常没有空格：
+
+```text
+登录流程
+```
+
+如果只按空格拆，中文问题会变成一个很长的词，很难匹配。所以这里先用简单的双字切分，例如：
+
+```text
+登录流程 -> 登录、录流、流程
+```
+
+这不是专业中文分词，但足够作为练习阶段的关键词检索。
+
+### chunk 打分
+
+当前打分：
+
+```java
+private double scoreChunk(DocumentChunk chunk, Set<String> terms) {
+    String content = chunk.content().toLowerCase(Locale.ROOT);
+    double score = 0;
+
+    for (String term : terms) {
+        if (content.contains(term)) {
+            score += Math.min(term.length(), 8);
+        }
+    }
+
+    return score;
+}
+```
+
+逻辑很直白：
+
+- 如果 chunk 内容包含某个关键词，就加分。
+- 词越长，分数越高。
+- 单个词最多加 8 分，避免超长词影响过大。
+
+局限：
+
+- 只支持字面匹配。
+- 不理解同义词。
+- 不理解上下文。
+- 不支持排序算法 BM25。
+- 不支持向量语义搜索。
+
+但它有一个优点：非常容易理解。
+
+### 返回 sources
+
+当前 `SourceReference` 包含：
+
+```java
+public record SourceReference(
+        String documentName,
+        String snippet,
+        double score
+) {
+}
+```
+
+转换逻辑：
+
+```java
+private SourceReference toSourceReference(ScoredChunk scoredChunk) {
+    DocumentChunk chunk = scoredChunk.chunk();
+    String documentName = documentRepository.findById(chunk.documentId())
+            .map(KnowledgeDocument::filename)
+            .orElse("Unknown document");
+
+    return new SourceReference(
+            documentName,
+            snippet(chunk.content()),
+            scoredChunk.score()
+    );
+}
+```
+
+为什么要返回 sources：
+
+- 用户可以知道答案依据来自哪个文档。
+- 后续 AI 回答出现问题时，可以追溯检索结果。
+- 面试时你可以说明自己考虑了可解释性。
+
+### 为什么 snippet 要截断
+
+当前：
+
+```java
+private String snippet(String content) {
+    String singleLineContent = content.replace("\n", " ").trim();
+    if (singleLineContent.length() <= 180) {
+        return singleLineContent;
+    }
+    return singleLineContent.substring(0, 180) + "...";
+}
+```
+
+原因：
+
+- 前端 sources 区域不适合展示完整 chunk。
+- snippet 只需要帮助用户判断来源是否相关。
+- 完整 chunk 后续可以在详情页或引用弹窗中展示。
+
+### 当前方案和真正向量检索的区别
+
+关键词检索：
+
+```text
+问题词是否出现在 chunk 文本里
+```
+
+向量检索：
+
+```text
+问题语义和 chunk 语义是否相似
+```
+
+例子：
+
+```text
+问题：如何登录系统？
+文档：用户认证流程包括账号密码校验和 token 签发。
+```
+
+关键词检索可能匹配不到，因为没有“登录”这个词。
+
+向量检索更可能匹配到，因为它理解“登录”和“认证”语义接近。
+
+所以这一节不是最终方案，而是为了让你先理解检索输入输出。
+
+### 本节你应该掌握
+
+- RAG 可以先拆成 Retrieval 和 Generation 两步。
+- 先做关键词检索能帮助我们验证 chunk 和 sources 链路。
+- 中文没有天然空格，简单关键词检索要额外处理。
+- `score` 是我们对 chunk 相关性的粗略估计。
+- sources 是 AI 知识库系统可信度的重要组成部分。
+- 后续向量检索会替代当前关键词匹配。
 
 ## 代码阅读指南 01：后端分层怎么看
 

@@ -1,6 +1,7 @@
 package com.devpilot.ai.knowledge;
 
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -20,6 +21,11 @@ public class DatabaseKnowledgeDocumentRepository implements KnowledgeDocumentRep
                 .stream()
                 .map(this::toDomain)
                 .toList();
+    }
+
+    @Override
+    public Optional<KnowledgeDocument> findById(String id) {
+        return jpaRepository.findById(id).map(this::toDomain);
     }
 
     @Override

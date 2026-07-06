@@ -141,7 +141,10 @@ function formatBytes(sizeBytes: number) {
         </p>
         <div v-else class="document-list">
           <article v-for="document in store.documents" :key="document.id" class="document-item">
-            <strong>{{ document.filename }}</strong>
+            <div>
+              <strong>{{ document.filename }}</strong>
+              <p>{{ document.chunkCount }} chunks</p>
+            </div>
             <span>{{ formatBytes(document.sizeBytes) }}</span>
           </article>
         </div>

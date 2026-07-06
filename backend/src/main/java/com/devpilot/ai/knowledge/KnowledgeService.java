@@ -3,7 +3,11 @@ package com.devpilot.ai.knowledge;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,15 +18,21 @@ public class KnowledgeService {
 
     private final KnowledgeRepository knowledgeRepository;
     private final KnowledgeDocumentRepository documentRepository;
+    private final DocumentChunkRepository chunkRepository;
+    private final TextChunker textChunker;
 
     // Service 依赖的是我们自己定义的 Repository 接口，而不是直接依赖 Spring Data JPA。
     // 这样以后从 H2/PostgreSQL 换成别的存储方案时，业务层改动会更小。
     public KnowledgeService(
             KnowledgeRepository knowledgeRepository,
-            KnowledgeDocumentRepository documentRepository
+            KnowledgeDocumentRepository documentRepository,
+            DocumentChunkRepository chunkRepository,
+            TextChunker textChunker
     ) {
         this.knowledgeRepository = knowledgeRepository;
         this.documentRepository = documentRepository;
+        this.chunkRepository = chunkRepository;
+        this.textChunker = textChunker;
     }
 
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
@@ -47,11 +57,23 @@ public class KnowledgeService {
         // 先确认知识库存在。不存在就抛业务异常，由 GlobalExceptionHandler 转成 404。
         KnowledgeBase knowledgeBase = knowledgeRepository.findById(knowledgeBaseId)
                 .orElseThrow(() -> new KnowledgeBaseNotFoundException(knowledgeBaseId));
+        List<ScoredChunk> scoredChunks = retrieveRelevantChunks(knowledgeBase.id(), question);
+
+        if (scoredChunks.isEmpty()) {
+            return new AskKnowledgeResponse(
+                    "当前知识库还没有检索到相关片段。你可以先上传 Markdown 或文本文件，再重新提问。",
+                    List.of()
+            );
+        }
+
+        List<SourceReference> sources = scoredChunks.stream()
+                .map(this::toSourceReference)
+                .toList();
 
         return new AskKnowledgeResponse(
-                "This is a placeholder answer for knowledge base `%s`: %s"
-                        .formatted(knowledgeBase.id(), question),
-                List.of(new SourceReference("README.md", "Project overview", 0.92))
+                "我先用关键词检索找到了 %d 个相关片段。下一步接入 AI 后，会把这些片段作为上下文生成自然语言回答。"
+                        .formatted(sources.size()),
+                sources
         );
     }
 
@@ -82,6 +104,8 @@ public class KnowledgeService {
         );
 
         KnowledgeDocument savedDocument = documentRepository.save(document);
+        List<DocumentChunk> chunks = buildChunks(savedDocument);
+        chunkRepository.saveAll(chunks);
         knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
         return toDocumentSummary(savedDocument);
     }
@@ -105,8 +129,95 @@ public class KnowledgeService {
                 document.filename(),
                 document.contentType(),
                 document.sizeBytes(),
-                document.createdAt()
+                document.createdAt(),
+                chunkRepository.countByDocumentId(document.id())
         );
+    }
+
+    private List<DocumentChunk> buildChunks(KnowledgeDocument document) {
+        return textChunker.split(document.content())
+                .stream()
+                .map(chunk -> new DocumentChunk(
+                        UUID.randomUUID().toString(),
+                        document.knowledgeBaseId(),
+                        document.id(),
+                        chunk.index(),
+                        chunk.content(),
+                        chunk.charStart(),
+                        chunk.charEnd(),
+                        Instant.now()
+                ))
+                .toList();
+    }
+
+    private List<ScoredChunk> retrieveRelevantChunks(String knowledgeBaseId, String question) {
+        Set<String> terms = extractSearchTerms(question);
+        if (terms.isEmpty()) {
+            return List.of();
+        }
+
+        return chunkRepository.findAllByKnowledgeBaseId(knowledgeBaseId)
+                .stream()
+                .map(chunk -> new ScoredChunk(chunk, scoreChunk(chunk, terms)))
+                .filter(scoredChunk -> scoredChunk.score() > 0)
+                .sorted(Comparator.comparingDouble(ScoredChunk::score).reversed())
+                .limit(5)
+                .toList();
+    }
+
+    private Set<String> extractSearchTerms(String question) {
+        String normalizedQuestion = question.toLowerCase(Locale.ROOT).trim();
+        Set<String> terms = new LinkedHashSet<>();
+
+        for (String term : normalizedQuestion.split("[^\\p{IsAlphabetic}\\p{IsDigit}\\p{IsHan}]+")) {
+            if (term.length() >= 2) {
+                terms.add(term);
+            }
+        }
+
+        // 中文问题常常没有空格，额外加入相邻双字词，让简单关键词检索也能命中一部分中文内容。
+        for (int index = 0; index < normalizedQuestion.length() - 1; index++) {
+            String term = normalizedQuestion.substring(index, index + 2).trim();
+            if (term.codePoints().allMatch(Character::isLetter)) {
+                terms.add(term);
+            }
+        }
+
+        return terms;
+    }
+
+    private double scoreChunk(DocumentChunk chunk, Set<String> terms) {
+        String content = chunk.content().toLowerCase(Locale.ROOT);
+        double score = 0;
+
+        for (String term : terms) {
+            if (content.contains(term)) {
+                score += Math.min(term.length(), 8);
+            }
+        }
+
+        return score;
+    }
+
+    private SourceReference toSourceReference(ScoredChunk scoredChunk) {
+        DocumentChunk chunk = scoredChunk.chunk();
+        String documentName = documentRepository.findById(chunk.documentId())
+                .map(KnowledgeDocument::filename)
+                .orElse("Unknown document");
+
+        return new SourceReference(
+                documentName,
+                snippet(chunk.content()),
+                scoredChunk.score()
+        );
+    }
+
+    private String snippet(String content) {
+        String singleLineContent = content.replace("\n", " ").trim();
+        if (singleLineContent.length() <= 180) {
+            return singleLineContent;
+        }
+        return singleLineContent.substring(0, 180) + "...";
     }
 
     private void validateDocument(MultipartFile file) {
@@ -141,5 +252,8 @@ public class KnowledgeService {
         } catch (IOException exception) {
             throw new InvalidDocumentException("Could not read document content.");
         }
+    }
+
+    private record ScoredChunk(DocumentChunk chunk, double score) {
     }
 }
