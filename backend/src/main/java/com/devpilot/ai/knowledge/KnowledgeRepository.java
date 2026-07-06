@@ -8,5 +8,8 @@ public interface KnowledgeRepository {
     List<KnowledgeBase> findAll();
 
     Optional<KnowledgeBase> findById(String id);
-}
 
+    KnowledgeBase save(KnowledgeBase knowledgeBase);
+
+    void incrementDocumentCount(String id);
+}

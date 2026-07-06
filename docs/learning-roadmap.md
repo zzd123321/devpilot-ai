@@ -302,6 +302,10 @@ http://localhost:8080/api/health
 - [x] 理解前后端请求链路
 - [x] 引入后端 Service 层
 - [x] 引入后端 Repository 层
+- [x] 实现创建知识库的前后端链路
+- [x] 实现统一错误响应与前端错误提示
+- [x] 接入 PostgreSQL、JPA 与 Flyway
+- [x] 实现文档上传与文档列表
 
 ## 学习笔记 01：前后端请求链路
 
@@ -953,3 +957,1419 @@ common/ApiErrorResponse.java
 - DTO 和内部业务对象即使字段一样，也有不同职责。
 - `Optional` 可以明确表达“可能没有结果”。
 - 业务异常应该被映射成合适的 HTTP 状态码。
+
+## 学习笔记 04：实现创建知识库
+
+本节目标：实现一个完整的前后端写入链路，让用户可以在页面上创建新的知识库。
+
+### 本节完成了什么
+
+新增后端接口：
+
+```http
+POST /api/knowledge-bases
+Content-Type: application/json
+
+{
+  "name": "My Project Docs"
+}
+```
+
+成功响应：
+
+```http
+201 Created
+Location: /api/knowledge-bases/{id}
+```
+
+响应体：
+
+```json
+{
+  "id": "生成的 UUID",
+  "name": "My Project Docs",
+  "documentCount": 0
+}
+```
+
+新增前端能力：
+
+- 页面上输入知识库名称。
+- 点击 `Create`。
+- 前端调用创建接口。
+- 创建成功后刷新知识库列表。
+- 自动选中新创建的知识库。
+
+### 后端：请求 DTO
+
+新增文件：
+
+```text
+backend/src/main/java/com/devpilot/ai/knowledge/CreateKnowledgeBaseRequest.java
+```
+
+代码：
+
+```java
+public record CreateKnowledgeBaseRequest(
+        @NotBlank(message = "Knowledge base name is required")
+        @Size(max = 80, message = "Knowledge base name must be 80 characters or fewer")
+        String name
+) {
+}
+```
+
+这个类是请求 DTO，专门描述“创建知识库”接口需要的请求体。
+
+为什么不用 `KnowledgeBase` 直接接收请求：
+
+- 创建时前端不应该传 `id`。
+- 创建时 `documentCount` 应该由后端决定。
+- 请求结构和内部业务对象不是一回事。
+- DTO 可以承载参数校验规则。
+
+### 后端：参数校验
+
+本次用了两个校验注解：
+
+```java
+@NotBlank
+@Size(max = 80)
+```
+
+含义：
+
+- `@NotBlank`：不能是 `null`、空字符串或纯空格。
+- `@Size(max = 80)`：名称最多 80 个字符。
+
+Controller 中使用：
+
+```java
+@Valid @RequestBody CreateKnowledgeBaseRequest request
+```
+
+`@Valid` 会触发 DTO 上的校验规则。如果请求不合法，Spring 会返回 `400 Bad Request`。
+
+注意：参数校验应该放在后端。前端也可以做校验，但前端校验只是用户体验，不能替代后端校验。
+
+### 后端：RESTful 创建接口
+
+新增接口：
+
+```java
+@PostMapping
+public ResponseEntity<KnowledgeBaseSummary> createKnowledgeBase(
+        @Valid @RequestBody CreateKnowledgeBaseRequest request
+) {
+    KnowledgeBaseSummary knowledgeBase = knowledgeService.createKnowledgeBase(request.name());
+    URI location = URI.create("/api/knowledge-bases/" + knowledgeBase.id());
+    return ResponseEntity.created(location).body(knowledgeBase);
+}
+```
+
+这里有两个重点：
+
+1. 创建资源用 `POST /api/knowledge-bases`。
+2. 创建成功返回 `201 Created`，不是普通的 `200 OK`。
+
+为什么返回 `Location`：
+
+```http
+Location: /api/knowledge-bases/{id}
+```
+
+它告诉客户端：新资源的位置在哪里。这是 RESTful API 中常见的设计。
+
+### 后端：Service 负责创建业务
+
+Service 中新增：
+
+```java
+public KnowledgeBaseSummary createKnowledgeBase(String name) {
+    KnowledgeBase knowledgeBase = new KnowledgeBase(
+            UUID.randomUUID().toString(),
+            name.trim(),
+            0
+    );
+    return toSummary(knowledgeRepository.save(knowledgeBase));
+}
+```
+
+Service 负责的事情：
+
+- 生成知识库 ID。
+- 清理名称两侧空格。
+- 设置初始文档数量为 0。
+- 调用 Repository 保存。
+- 把内部对象转换成返回给前端的 DTO。
+
+为什么 ID 在后端生成：
+
+- 前端不应该决定核心业务 ID。
+- 后端可以统一保证 ID 规则。
+- 未来换成数据库自增 ID、雪花 ID、UUID 都不影响前端。
+
+### 后端：Repository 保存数据
+
+Repository 接口新增：
+
+```java
+KnowledgeBase save(KnowledgeBase knowledgeBase);
+```
+
+内存实现：
+
+```java
+private final ConcurrentMap<String, KnowledgeBase> knowledgeBases = new ConcurrentHashMap<>();
+
+@Override
+public KnowledgeBase save(KnowledgeBase knowledgeBase) {
+    knowledgeBases.put(knowledgeBase.id(), knowledgeBase);
+    return knowledgeBase;
+}
+```
+
+为什么不用普通 `HashMap`：
+
+- Spring 应用通常是多线程处理请求。
+- 多个用户可能同时创建知识库。
+- `ConcurrentHashMap` 比普通 `HashMap` 更适合并发读写。
+
+注意：这仍然不是持久化存储。应用重启后，内存数据会丢失。下一阶段接数据库就是为了解决这个问题。
+
+### 前端：API 函数
+
+新增：
+
+```ts
+export async function createKnowledgeBase(name: string) {
+  const { data } = await http.post<KnowledgeBaseSummary>('/knowledge-bases', { name })
+  return data
+}
+```
+
+API 层负责：
+
+- 定义请求方法。
+- 定义请求路径。
+- 定义请求体。
+- 定义响应类型。
+
+页面和 store 不应该手写 axios 细节。
+
+### 前端：Pinia action
+
+新增：
+
+```ts
+async function create(name: string) {
+  creating.value = true
+  try {
+    const knowledgeBase = await createKnowledgeBase(name)
+    await loadKnowledgeBases()
+    currentKnowledgeBaseId.value = knowledgeBase.id
+    latestAnswer.value = null
+  } finally {
+    creating.value = false
+  }
+}
+```
+
+这里有几个业务动作：
+
+- 打开 `creating` 状态，让按钮显示创建中。
+- 调用后端创建接口。
+- 创建成功后重新加载知识库列表。
+- 自动选中新创建的知识库。
+- 清空旧回答，避免用户误以为旧回答属于新知识库。
+
+### 前端：页面表单
+
+页面新增：
+
+```vue
+<input
+  v-model="newKnowledgeBaseName"
+  class="text-input"
+  placeholder="New knowledge base"
+  @keyup.enter="submitKnowledgeBase"
+/>
+<button class="secondary-button" :disabled="store.creating" @click="submitKnowledgeBase">
+  {{ store.creating ? 'Creating...' : 'Create' }}
+</button>
+```
+
+这里的 `v-model` 做了双向绑定：
+
+- 用户输入时，更新 `newKnowledgeBaseName`。
+- 代码清空 `newKnowledgeBaseName` 时，输入框也会清空。
+
+提交方法：
+
+```ts
+function submitKnowledgeBase() {
+  const trimmed = newKnowledgeBaseName.value.trim()
+  if (!trimmed) return
+  void store.create(trimmed).then(() => {
+    newKnowledgeBaseName.value = ''
+  })
+}
+```
+
+注意点：
+
+- 前端先做空值判断，提升体验。
+- 后端仍然要做 `@NotBlank`，保证安全。
+- 创建成功后清空输入框。
+
+### 完整请求链路
+
+```text
+用户输入名称
+  -> WorkspaceView.vue submitKnowledgeBase
+  -> Pinia store create
+  -> API createKnowledgeBase
+  -> POST /api/knowledge-bases
+  -> KnowledgeController
+  -> KnowledgeService
+  -> KnowledgeRepository.save
+  -> 返回 201 Created
+  -> 前端刷新列表并选中新知识库
+```
+
+### 本节你应该掌握
+
+- 创建资源通常使用 POST。
+- 创建成功更合适的状态码是 `201 Created`。
+- 请求 DTO 不等于内部业务对象。
+- `@Valid` 触发后端参数校验。
+- 前端校验负责体验，后端校验负责安全和正确性。
+- Pinia action 可以表达一个完整的前端业务流程。
+- 内存 Repository 可以练分层，但不能替代数据库。
+
+## 学习笔记 05：统一错误响应与前端错误提示
+
+本节目标：让后端错误返回稳定结构，让前端能把错误显示给用户。
+
+### 为什么要做统一错误处理
+
+真实项目里，请求不可能永远成功。常见错误包括：
+
+- 用户提交空表单。
+- 用户输入内容太长。
+- 请求不存在的知识库。
+- 用户未登录。
+- 权限不足。
+- 服务器内部异常。
+
+如果每个接口都随便返回不同格式，前端就很难统一处理。
+
+统一错误结构的目标是：
+
+- 前端能稳定读取错误 code。
+- 前端能稳定读取错误 message。
+- 表单错误能定位到具体字段。
+- 后端不用在每个 Controller 里重复写错误响应。
+
+### 当前错误响应结构
+
+当前后端错误响应：
+
+```java
+public record ApiErrorResponse(
+        String code,
+        String message,
+        Instant timestamp,
+        List<FieldErrorResponse> fieldErrors
+) {
+}
+```
+
+字段含义：
+
+- `code`：机器可读的错误码，比如 `VALIDATION_ERROR`。
+- `message`：人可读的错误摘要。
+- `timestamp`：错误发生时间。
+- `fieldErrors`：字段级错误列表。
+
+字段错误：
+
+```java
+public record FieldErrorResponse(
+        String field,
+        String message
+) {
+}
+```
+
+例如创建知识库时传空名称，后端可以返回：
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "message": "Request validation failed",
+  "timestamp": "2026-07-06T02:00:00Z",
+  "fieldErrors": [
+    {
+      "field": "name",
+      "message": "Knowledge base name is required"
+    }
+  ]
+}
+```
+
+### 后端：处理参数校验错误
+
+Spring 在 `@Valid` 校验失败时会抛出：
+
+```java
+MethodArgumentNotValidException
+```
+
+我们在 `GlobalExceptionHandler` 里统一处理：
+
+```java
+@ExceptionHandler(MethodArgumentNotValidException.class)
+public ResponseEntity<ApiErrorResponse> handleValidationError(MethodArgumentNotValidException exception) {
+    List<FieldErrorResponse> fieldErrors = exception.getBindingResult()
+            .getFieldErrors()
+            .stream()
+            .map(fieldError -> new FieldErrorResponse(
+                    fieldError.getField(),
+                    fieldError.getDefaultMessage()
+            ))
+            .toList();
+
+    ApiErrorResponse response = new ApiErrorResponse(
+            "VALIDATION_ERROR",
+            "Request validation failed",
+            Instant.now(),
+            fieldErrors
+    );
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+}
+```
+
+这里返回的是：
+
+```http
+400 Bad Request
+```
+
+因为这是客户端传参不合法，不是服务器坏了。
+
+### 后端：处理业务找不到错误
+
+请求不存在的知识库时，我们返回：
+
+```http
+404 Not Found
+```
+
+对应代码：
+
+```java
+@ExceptionHandler(KnowledgeBaseNotFoundException.class)
+public ResponseEntity<ApiErrorResponse> handleKnowledgeBaseNotFound(KnowledgeBaseNotFoundException exception) {
+    ApiErrorResponse response = new ApiErrorResponse(
+            "KNOWLEDGE_BASE_NOT_FOUND",
+            exception.getMessage(),
+            Instant.now(),
+            List.of()
+    );
+    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+}
+```
+
+`400` 和 `404` 的区别：
+
+- `400`：请求格式或参数不合法。
+- `404`：请求格式合法，但资源不存在。
+
+### 前端：把后端错误转换成提示文案
+
+前端在 `src/api/http.ts` 中新增：
+
+```ts
+export function getApiErrorMessage(error: unknown) {
+  if (!axios.isAxiosError<ApiErrorResponse>(error)) {
+    return 'Something went wrong.'
+  }
+
+  const response = error.response?.data
+  const firstFieldError = response?.fieldErrors?.[0]
+
+  if (firstFieldError?.message) {
+    return firstFieldError.message
+  }
+
+  if (response?.message) {
+    return response.message
+  }
+
+  return 'Request failed. Please try again.'
+}
+```
+
+这个函数的作用是把复杂的 axios 错误对象转成一个简单字符串。
+
+为什么要集中处理：
+
+- 页面不需要理解 axios 错误结构。
+- store 不需要重复写解析逻辑。
+- 后续登录过期、权限不足等错误可以统一扩展。
+
+### 前端：Store 保存错误状态
+
+Pinia store 新增：
+
+```ts
+const errorMessage = ref<string | null>(null)
+```
+
+创建知识库时：
+
+```ts
+async function create(name: string) {
+  creating.value = true
+  errorMessage.value = null
+  try {
+    const knowledgeBase = await createKnowledgeBase(name)
+    await loadKnowledgeBases()
+    currentKnowledgeBaseId.value = knowledgeBase.id
+    latestAnswer.value = null
+    return true
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+    return false
+  } finally {
+    creating.value = false
+  }
+}
+```
+
+这里有几个注意点：
+
+- 请求前清空旧错误。
+- 请求失败时保存错误文案。
+- 返回 `true / false` 告诉页面操作是否成功。
+- `finally` 中关闭 loading，避免按钮一直处于创建中。
+
+### 前端：页面展示错误
+
+页面中新增：
+
+```vue
+<p v-if="store.errorMessage" class="error-message">
+  {{ store.errorMessage }}
+</p>
+```
+
+这就是典型的状态驱动 UI：
+
+```text
+store.errorMessage 有值 -> 显示错误提示
+store.errorMessage 为空 -> 不显示错误提示
+```
+
+### 本节你应该掌握
+
+- 后端错误响应应该稳定、统一。
+- `400 Bad Request` 适合参数校验错误。
+- `404 Not Found` 适合资源不存在。
+- `@RestControllerAdvice` 可以集中处理异常。
+- 前端不应该直接展示原始异常对象。
+- Pinia store 可以统一保存业务错误状态。
+- 用户体验上，失败要有反馈，成功要清理旧错误。
+
+## 学习笔记 06：接入 H2、PostgreSQL、JPA 与 Flyway
+
+本节目标：把知识库从内存保存改成数据库保存，让数据在后端重启后仍然存在。当前默认使用本地 H2 文件数据库，PostgreSQL 作为后续可选 profile 保留。
+
+### 为什么要接数据库
+
+之前我们使用 `InMemoryKnowledgeRepository` 保存知识库。
+
+它的优点是简单，适合早期练习分层；缺点也很明显：
+
+- 后端重启后数据会丢失。
+- 无法支持真实用户数据。
+- 无法做复杂查询。
+- 无法支持后续文档、chunk、会话等核心数据。
+
+所以这一节开始引入持久化。考虑到本机还没有 Docker 和 PostgreSQL，默认开发环境先使用 H2 文件数据库，这样不安装额外软件也能继续学习。
+
+### 本节引入了哪些东西
+
+新增后端依赖：
+
+- `spring-boot-starter-data-jpa`
+- `flyway-core`
+- `flyway-database-postgresql`
+- `postgresql`
+- `h2`
+
+它们分别负责：
+
+- JPA：用 Java 对象读写数据库。
+- Flyway：管理数据库表结构版本。
+- PostgreSQL Driver：后续让应用连接 PostgreSQL。
+- H2：当前默认开发环境和测试环境使用的轻量数据库。
+
+### 为什么不用 Hibernate 自动建表
+
+配置中使用：
+
+```yaml
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+```
+
+`validate` 的意思是：Hibernate 只校验实体和表结构是否匹配，不自动创建或修改表。
+
+表结构由 Flyway 管理：
+
+```text
+backend/src/main/resources/db/migration/V1__create_knowledge_bases.sql
+```
+
+这样做的好处：
+
+- 数据库变更有版本记录。
+- 团队协作时每个人的表结构一致。
+- 线上环境不会被 Hibernate 意外改表。
+- 后续排查问题时能知道每次表结构怎么变的。
+
+### Flyway 迁移脚本
+
+当前脚本：
+
+```sql
+create table knowledge_bases (
+    id varchar(36) primary key,
+    name varchar(80) not null,
+    document_count bigint not null default 0,
+    created_at timestamp not null default current_timestamp
+);
+
+insert into knowledge_bases (id, name, document_count)
+values ('demo', 'Demo Knowledge Base', 0);
+```
+
+命名规则：
+
+```text
+V1__create_knowledge_bases.sql
+```
+
+注意中间是两个下划线 `__`。
+
+Flyway 会按照版本号顺序执行迁移：
+
+```text
+V1 -> V2 -> V3 ...
+```
+
+后续新增文档表时，我们会创建：
+
+```text
+V2__create_documents.sql
+```
+
+### Entity 是什么
+
+新增：
+
+```text
+KnowledgeBaseEntity.java
+```
+
+它表示数据库中的一行数据：
+
+```java
+@Entity
+@Table(name = "knowledge_bases")
+public class KnowledgeBaseEntity {
+    @Id
+    @Column(length = 36)
+    private String id;
+}
+```
+
+几个关键注解：
+
+- `@Entity`：告诉 JPA 这是数据库实体。
+- `@Table`：指定对应的数据表。
+- `@Id`：指定主键字段。
+- `@Column`：指定列约束。
+
+### 为什么 Entity 不是 record
+
+之前的 `KnowledgeBase` 是 record：
+
+```java
+public record KnowledgeBase(String id, String name, long documentCount) {
+}
+```
+
+但 JPA Entity 通常使用普通 class。
+
+原因：
+
+- JPA 需要无参构造函数。
+- JPA 需要通过反射创建对象。
+- Entity 往往需要和 ORM 生命周期配合。
+
+所以当前有两种对象：
+
+- `KnowledgeBaseEntity`：数据库实体。
+- `KnowledgeBase`：业务层内部对象。
+
+### Spring Data JPA Repository
+
+新增：
+
+```java
+public interface JpaKnowledgeBaseRepository extends JpaRepository<KnowledgeBaseEntity, String> {
+
+    List<KnowledgeBaseEntity> findAllByOrderByNameAsc();
+}
+```
+
+`JpaRepository<KnowledgeBaseEntity, String>` 的含义：
+
+- 管理的实体类型是 `KnowledgeBaseEntity`。
+- 主键类型是 `String`。
+
+Spring Data JPA 会自动提供：
+
+- `findById`
+- `findAll`
+- `save`
+- `deleteById`
+- `count`
+
+`findAllByOrderByNameAsc` 是按照 Spring Data 方法名约定生成查询：
+
+```text
+findAll      查询全部
+OrderByName  按 name 排序
+Asc          升序
+```
+
+### 为什么还保留自己的 KnowledgeRepository
+
+当前结构：
+
+```text
+KnowledgeService
+  -> KnowledgeRepository
+  -> DatabaseKnowledgeRepository
+  -> JpaKnowledgeBaseRepository
+```
+
+我们没有让 Service 直接依赖 `JpaKnowledgeBaseRepository`。
+
+原因：
+
+- Service 关心业务，不应该绑定 JPA 技术细节。
+- 以后如果换 MyBatis、MongoDB、远程服务，Service 改动更小。
+- 自定义 Repository 接口表达的是业务需要的数据访问能力。
+
+这是依赖倒置思想的一个小实践。
+
+### 当前默认为什么用 H2
+
+主配置连接 H2 文件数据库：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/devpilot;MODE=PostgreSQL
+```
+
+这个数据库文件会生成在：
+
+```text
+backend/data/devpilot
+```
+
+好处：
+
+- 不需要安装 Docker。
+- 不需要安装 PostgreSQL。
+- 后端重启后数据仍然存在。
+- 适合当前阶段练习 JPA、Flyway、Repository 分层。
+
+注意：H2 是开发学习阶段的轻量选择，不是最终生产数据库。后续做 pgvector、向量检索、部署时，我们仍然会切换到 PostgreSQL。
+
+### PostgreSQL profile
+
+PostgreSQL 配置被放在：
+
+```text
+backend/src/main/resources/application-postgres.yml
+```
+
+内容类似：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/devpilot
+```
+
+以后安装 Docker 或 PostgreSQL 后，可以这样启动：
+
+```bash
+cd /Users/zhuzhendong/Documents/前端转全栈/devpilot-ai
+docker compose up -d postgres
+
+cd backend
+./mvnw spring-boot:run -Dspring-boot.run.profiles=postgres
+```
+
+### 测试环境为什么也用 H2
+
+测试配置：
+
+```text
+backend/src/test/resources/application.yml
+```
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:mem:devpilot-test;MODE=PostgreSQL
+```
+
+为什么测试用 H2：
+
+- 不需要启动 Docker。
+- 测试更快。
+- CI 更容易跑。
+- 适合当前阶段的基础验证。
+
+注意：H2 不能完全替代 PostgreSQL。复杂 SQL、pgvector、全文检索等特性仍然要用 PostgreSQL 验证。
+
+### 本地启动顺序
+
+当前默认不需要 Docker，也不需要 PostgreSQL，直接启动后端：
+
+```bash
+cd /Users/zhuzhendong/Documents/前端转全栈/devpilot-ai
+cd backend
+./mvnw spring-boot:run
+```
+
+最后启动前端：
+
+```bash
+cd ../frontend
+npm run dev
+```
+
+### 本节你应该掌握
+
+- 数据库持久化解决内存数据重启丢失的问题。
+- Flyway 负责数据库结构版本管理。
+- JPA Entity 表示数据库表中的一行。
+- Spring Data JPA Repository 可以自动生成常见 CRUD。
+- Service 不直接依赖 JPA Repository，可以保持业务层更干净。
+- H2 适合当前开发学习阶段，PostgreSQL 适合后续向量检索和部署阶段。
+
+## 学习笔记 07：文档上传与文档列表
+
+本节目标：打通知识库文档上传链路，把 `.txt/.md/.markdown` 文件保存到数据库，并在前端展示当前知识库的文档列表。
+
+### 为什么先做文本文件
+
+真实知识库会支持 PDF、Word、网页、代码仓库等多种来源。但一开始不应该直接做大而全。
+
+我们先支持文本类文件：
+
+- `.txt`
+- `.md`
+- `.markdown`
+
+原因：
+
+- 文本文件不需要复杂解析。
+- 适合先打通上传、存储、列表展示链路。
+- 后续做 chunk 切分和 embedding 时可以直接复用内容。
+- PDF 解析会引入额外复杂度，应该放到基础链路稳定之后。
+
+### 本节完成了什么
+
+新增后端接口：
+
+```http
+GET /api/knowledge-bases/{knowledgeBaseId}/documents
+```
+
+用于查询当前知识库的文档列表。
+
+新增后端接口：
+
+```http
+POST /api/knowledge-bases/{knowledgeBaseId}/documents
+Content-Type: multipart/form-data
+```
+
+用于上传文档。
+
+前端新增：
+
+- 文件选择框。
+- 上传按钮。
+- 当前知识库文档列表。
+- 上传成功后刷新文档列表。
+- 上传成功后刷新知识库文档数量。
+
+### 数据库表设计
+
+新增 Flyway 脚本：
+
+```text
+backend/src/main/resources/db/migration/V2__create_knowledge_documents.sql
+```
+
+表结构：
+
+```sql
+create table knowledge_documents (
+    id varchar(36) primary key,
+    knowledge_base_id varchar(36) not null,
+    filename varchar(255) not null,
+    content_type varchar(120),
+    size_bytes bigint not null,
+    content text not null,
+    created_at timestamp not null default current_timestamp,
+    constraint fk_knowledge_documents_knowledge_base
+        foreign key (knowledge_base_id)
+        references knowledge_bases (id)
+);
+```
+
+字段说明：
+
+- `id`：文档 ID。
+- `knowledge_base_id`：文档属于哪个知识库。
+- `filename`：原始文件名。
+- `content_type`：浏览器上传时提供的 MIME 类型。
+- `size_bytes`：文件大小。
+- `content`：文件文本内容。
+- `created_at`：上传时间。
+
+为什么要有外键：
+
+```sql
+foreign key (knowledge_base_id) references knowledge_bases (id)
+```
+
+它保证文档必须属于一个已经存在的知识库，避免出现“孤儿文档”。
+
+### 后端对象分层
+
+本节新增了三类对象。
+
+业务对象：
+
+```text
+KnowledgeDocument.java
+```
+
+返回给前端的 DTO：
+
+```text
+KnowledgeDocumentSummary.java
+```
+
+数据库实体：
+
+```text
+KnowledgeDocumentEntity.java
+```
+
+这继续延续我们之前的原则：
+
+```text
+Entity 表示数据库结构
+Domain 表示业务内部模型
+DTO 表示接口输入输出
+```
+
+字段现在看起来很像，但角色不同，不要混用。
+
+### MultipartFile 是什么
+
+Controller 中上传接口：
+
+```java
+@PostMapping("/{knowledgeBaseId}/documents")
+public ResponseEntity<KnowledgeDocumentSummary> uploadDocument(
+        @PathVariable String knowledgeBaseId,
+        @RequestParam("file") MultipartFile file
+) {
+    KnowledgeDocumentSummary document = knowledgeService.uploadDocument(knowledgeBaseId, file);
+    URI location = URI.create("/api/knowledge-bases/%s/documents/%s".formatted(knowledgeBaseId, document.id()));
+    return ResponseEntity.created(location).body(document);
+}
+```
+
+`MultipartFile` 是 Spring 对上传文件的封装。
+
+它可以读取：
+
+- 文件名：`getOriginalFilename()`
+- 文件大小：`getSize()`
+- 文件类型：`getContentType()`
+- 文件内容：`getBytes()`
+- 是否为空：`isEmpty()`
+
+上传文件时，前端请求不是 JSON，而是：
+
+```http
+Content-Type: multipart/form-data
+```
+
+### 后端文件校验
+
+当前校验规则：
+
+```java
+if (file.isEmpty()) {
+    throw new InvalidDocumentException("Document file is required.");
+}
+
+if (file.getSize() > 1024 * 1024) {
+    throw new InvalidDocumentException("Document must be 1 MB or smaller.");
+}
+
+String filename = cleanFilename(file.getOriginalFilename()).toLowerCase();
+if (!filename.endsWith(".txt") && !filename.endsWith(".md") && !filename.endsWith(".markdown")) {
+    throw new InvalidDocumentException("Only .txt, .md, and .markdown files are supported for now.");
+}
+```
+
+为什么要校验：
+
+- 防止空文件。
+- 防止超大文件拖垮服务。
+- 当前阶段只支持文本文件。
+- 后续不同文件类型要走不同解析器。
+
+注意：前端的 `accept=".txt,.md,.markdown"` 只是用户体验，不能替代后端校验。用户可以绕过前端直接调用接口。
+
+### 文件内容如何读取
+
+当前实现：
+
+```java
+return new String(file.getBytes(), StandardCharsets.UTF_8);
+```
+
+这表示我们暂时把文件当成 UTF-8 文本读取。
+
+注意点：
+
+- 中文 Markdown 通常没问题。
+- 如果用户上传非 UTF-8 文件，可能会乱码。
+- 后续可以引入更完善的编码检测。
+- PDF、Word 不能这样读取，需要专门解析器。
+
+### 为什么上传时要加事务
+
+Service 方法：
+
+```java
+@Transactional
+public KnowledgeDocumentSummary uploadDocument(String knowledgeBaseId, MultipartFile file) {
+    ...
+    KnowledgeDocument savedDocument = documentRepository.save(document);
+    knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
+    return toDocumentSummary(savedDocument);
+}
+```
+
+这里做了两次数据库写入：
+
+1. 保存文档。
+2. 增加知识库的 `documentCount`。
+
+它们应该一起成功或一起失败。
+
+如果保存文档成功，但增加数量失败，就会出现数据不一致。所以这里使用 `@Transactional`。
+
+### JPA 类型映射坑：text 和 Lob
+
+本节一开始测试失败过一次：
+
+```text
+wrong column type encountered in column [content]
+found [character varying], but expecting [clob]
+```
+
+原因是 Entity 上使用了 `@Lob`，Hibernate 期望数据库列是 `CLOB`，但 Flyway 脚本创建的是 `text`。
+
+修复方式：
+
+```java
+@Column(nullable = false, columnDefinition = "text")
+private String content;
+```
+
+这个例子说明：
+
+- Flyway SQL 和 JPA Entity 必须保持一致。
+- `ddl-auto: validate` 能帮我们尽早发现不一致。
+- 这是关闭 Hibernate 自动建表的价值之一。
+
+### 前端上传文件
+
+API 函数：
+
+```ts
+export async function uploadKnowledgeDocument(knowledgeBaseId: string, file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const { data } = await http.post<KnowledgeDocumentSummary>(
+    `/knowledge-bases/${knowledgeBaseId}/documents`,
+    formData,
+  )
+  return data
+}
+```
+
+上传文件时要使用 `FormData`，不是普通 JSON。
+
+浏览器会自动设置 multipart boundary，所以通常不要手动设置 `Content-Type`。
+
+### 前端状态管理
+
+Pinia store 新增：
+
+- `documents`
+- `uploading`
+- `loadDocuments`
+- `uploadDocument`
+
+上传成功后：
+
+```ts
+await uploadKnowledgeDocument(currentKnowledgeBaseId.value, file)
+await loadKnowledgeBases()
+currentKnowledgeBaseId.value = knowledgeBaseId
+await loadDocuments()
+```
+
+这里要注意一个小细节：刷新知识库列表可能会重置当前选中的知识库，所以需要先保存当前 ID，再恢复它。
+
+### 本节你应该掌握
+
+- 文件上传使用 `multipart/form-data`。
+- Spring 用 `MultipartFile` 接收上传文件。
+- 文件类型和大小必须在后端校验。
+- 文档表应该通过外键关联知识库。
+- 多次数据库写入需要考虑事务。
+- `FormData` 是前端上传文件的常用方式。
+- Flyway SQL 和 JPA Entity 不一致时，`ddl-auto: validate` 会帮你发现问题。
+
+## 代码阅读指南 01：后端分层怎么看
+
+本节目标：帮助后端基础薄弱时更顺畅地阅读当前代码。建议你按下面顺序看，不要一上来就从数据库实体开始看。
+
+### 第一步：先看 Controller
+
+入口文件：
+
+```text
+backend/src/main/java/com/devpilot/ai/knowledge/KnowledgeController.java
+```
+
+Controller 是“HTTP 门面”，你可以把它理解成后端暴露给前端的门口。
+
+它回答三个问题：
+
+1. 这个接口的 URL 是什么？
+2. 这个接口用 GET 还是 POST？
+3. 收到请求后交给哪个 Service 方法？
+
+例如：
+
+```java
+@GetMapping("/{knowledgeBaseId}/documents")
+public List<KnowledgeDocumentSummary> listDocuments(@PathVariable String knowledgeBaseId) {
+    return knowledgeService.listDocuments(knowledgeBaseId);
+}
+```
+
+这段代码的意思是：
+
+- 当前接口是 GET。
+- 路径是 `/api/knowledge-bases/{knowledgeBaseId}/documents`。
+- `{knowledgeBaseId}` 从 URL 中取出来。
+- Controller 不自己查数据库，而是调用 `knowledgeService.listDocuments`。
+
+为什么 Controller 不直接查数据库：
+
+- Controller 应该只处理 HTTP 细节。
+- 数据库逻辑属于 Repository。
+- 业务规则属于 Service。
+- 如果全写在 Controller，文件会很快变成大杂烩。
+
+### 第二步：再看 Service
+
+入口文件：
+
+```text
+backend/src/main/java/com/devpilot/ai/knowledge/KnowledgeService.java
+```
+
+Service 是“业务流程编排层”。当前最值得看的方法是：
+
+```java
+@Transactional
+public KnowledgeDocumentSummary uploadDocument(String knowledgeBaseId, MultipartFile file) {
+    ensureKnowledgeBaseExists(knowledgeBaseId);
+    validateDocument(file);
+
+    KnowledgeDocument document = new KnowledgeDocument(...);
+
+    KnowledgeDocument savedDocument = documentRepository.save(document);
+    knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
+    return toDocumentSummary(savedDocument);
+}
+```
+
+这段代码可以按业务步骤读：
+
+1. 确认知识库存在。
+2. 校验文件是否为空、是否超大、类型是否支持。
+3. 把上传文件转换成业务对象 `KnowledgeDocument`。
+4. 保存文档。
+5. 增加知识库文档数量。
+6. 转成前端需要的 `KnowledgeDocumentSummary`。
+
+这里的重点不是语法，而是顺序：Service 把一个业务动作拆成多个小步骤。
+
+为什么这里有 `@Transactional`：
+
+- 保存文档是一次数据库写入。
+- 更新文档数量也是一次数据库写入。
+- 如果其中一步失败，另一部也应该回滚。
+
+所以事务保护的是“业务一致性”。
+
+### 第三步：看 Repository 接口
+
+入口文件：
+
+```text
+KnowledgeRepository.java
+KnowledgeDocumentRepository.java
+```
+
+Repository 接口描述“业务层需要什么数据能力”。
+
+例如：
+
+```java
+public interface KnowledgeDocumentRepository {
+
+    List<KnowledgeDocument> findAllByKnowledgeBaseId(String knowledgeBaseId);
+
+    KnowledgeDocument save(KnowledgeDocument document);
+}
+```
+
+这不是 Spring Data JPA 的接口，而是我们自己定义的业务接口。
+
+为什么要多这一层：
+
+- Service 不直接依赖 JPA。
+- 以后换数据库技术时，Service 尽量不改。
+- 测试时可以替换成假的 Repository。
+
+你可以把它理解成 Service 和数据库之间的“合同”。
+
+### 第四步：看 Repository 实现
+
+入口文件：
+
+```text
+DatabaseKnowledgeRepository.java
+DatabaseKnowledgeDocumentRepository.java
+```
+
+这两个类负责把我们自己的业务 Repository 转接到 Spring Data JPA。
+
+例如：
+
+```java
+public KnowledgeDocument save(KnowledgeDocument document) {
+    KnowledgeDocumentEntity entity = new KnowledgeDocumentEntity(...);
+    return toDomain(jpaRepository.save(entity));
+}
+```
+
+它做了两件事：
+
+1. 把业务对象 `KnowledgeDocument` 转成数据库实体 `KnowledgeDocumentEntity`。
+2. 调用 JPA 的 `save` 保存到数据库。
+
+为什么要转换：
+
+- Domain 对象服务于业务。
+- Entity 对象服务于数据库映射。
+- DTO 对象服务于接口输入输出。
+
+它们看起来字段类似，但变化原因不同，所以不要混成一个类。
+
+### 第五步：最后看 Entity
+
+入口文件：
+
+```text
+KnowledgeBaseEntity.java
+KnowledgeDocumentEntity.java
+```
+
+Entity 是数据库表在 Java 里的映射。
+
+例如：
+
+```java
+@Entity
+@Table(name = "knowledge_documents")
+public class KnowledgeDocumentEntity {
+    @Id
+    @Column(length = 36)
+    private String id;
+}
+```
+
+这段代码告诉 JPA：
+
+- 这个类对应数据库表 `knowledge_documents`。
+- `id` 是主键。
+- `id` 对应的列长度是 36。
+
+Entity 要和 Flyway SQL 对齐。
+
+比如 SQL 中是：
+
+```sql
+content text not null
+```
+
+Entity 中就写：
+
+```java
+@Column(nullable = false, columnDefinition = "text")
+private String content;
+```
+
+如果不对齐，`ddl-auto: validate` 会在启动时报错。这个报错虽然烦，但很有价值，因为它能提前发现表结构和 Java 代码不一致。
+
+### 第六步：看全局异常处理
+
+入口文件：
+
+```text
+backend/src/main/java/com/devpilot/ai/common/GlobalExceptionHandler.java
+```
+
+这里把后端异常转换成前端能稳定理解的 JSON。
+
+例如：
+
+```java
+@ExceptionHandler(InvalidDocumentException.class)
+public ResponseEntity<ApiErrorResponse> handleInvalidDocument(InvalidDocumentException exception) {
+    ...
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+}
+```
+
+这段代码的意思是：
+
+- 如果 Service 抛出 `InvalidDocumentException`。
+- 后端不要返回默认 500。
+- 而是返回 `400 Bad Request`。
+- 响应体使用统一的 `ApiErrorResponse`。
+
+这样前端就可以统一显示错误提示。
+
+### 当前后端请求链路总览
+
+上传文档链路：
+
+```text
+浏览器选择文件
+  -> POST multipart/form-data
+  -> KnowledgeController.uploadDocument
+  -> KnowledgeService.uploadDocument
+  -> validateDocument
+  -> readFileContent
+  -> KnowledgeDocumentRepository.save
+  -> JpaKnowledgeDocumentRepository.save
+  -> knowledge_documents 表
+```
+
+查询文档链路：
+
+```text
+页面加载文档列表
+  -> GET /documents
+  -> KnowledgeController.listDocuments
+  -> KnowledgeService.listDocuments
+  -> KnowledgeDocumentRepository.findAllByKnowledgeBaseId
+  -> JpaKnowledgeDocumentRepository.findAllByKnowledgeBaseIdOrderByCreatedAtDesc
+  -> 返回 KnowledgeDocumentSummary[]
+```
+
+### 初学后端时最容易混淆的点
+
+`@RestController`：
+表示这是 HTTP 接口入口。
+
+`@Service`：
+表示这是业务逻辑组件。
+
+`@Repository`：
+表示这是数据访问组件。
+
+`@Entity`：
+表示这是数据库表映射。
+
+`@Transactional`：
+表示这个方法里的数据库操作要放在同一个事务里。
+
+`@Valid`：
+表示校验请求 DTO 上的规则。
+
+`@RequestBody`：
+表示从 JSON 请求体读取数据。
+
+`@RequestParam("file")`：
+表示从表单字段里读取上传文件。
+
+### 推荐阅读顺序
+
+每次看一个新功能，都按这个顺序：
+
+```text
+1. Controller：接口长什么样
+2. Request/Response DTO：前后端传什么数据
+3. Service：业务步骤是什么
+4. Repository 接口：业务需要什么数据能力
+5. Repository 实现：怎么落到数据库
+6. Entity + migration：数据库表怎么设计
+7. 前端 API + store + 页面：用户怎么操作
+```
+
+这样读代码会比从文件树里随机点开舒服很多。

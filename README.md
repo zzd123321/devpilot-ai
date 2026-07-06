@@ -32,6 +32,15 @@ cd backend
 
 The API will start at `http://localhost:8080`.
 
+The default backend profile uses a local H2 file database at `backend/data/devpilot`.
+PostgreSQL is optional for later AI/vector-search work:
+
+```bash
+docker compose up -d postgres
+cd backend
+./mvnw spring-boot:run -Dspring-boot.run.profiles=postgres
+```
+
 ### Frontend
 
 ```bash

@@ -6,6 +6,7 @@
 target/
 *.class
 *.log
+backend/data/
 
 # Node
 node_modules/
