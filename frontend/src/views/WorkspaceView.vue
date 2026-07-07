@@ -57,6 +57,16 @@ function formatBytes(sizeBytes: number) {
   if (sizeBytes < 1024) return `${sizeBytes} B`
   return `${(sizeBytes / 1024).toFixed(1)} KB`
 }
+
+function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
+  const statusText = {
+    PROCESSING: 'Processing',
+    READY: 'Ready',
+    FAILED: 'Failed',
+  }
+
+  return statusText[status]
+}
 </script>
 
 <template>
@@ -142,8 +152,16 @@ function formatBytes(sizeBytes: number) {
         <div v-else class="document-list">
           <article v-for="document in store.documents" :key="document.id" class="document-item">
             <div>
-              <strong>{{ document.filename }}</strong>
-              <p>{{ document.chunkCount }} chunks</p>
+              <div class="document-title-row">
+                <strong>{{ document.filename }}</strong>
+                <span class="status-badge" :class="`status-badge-${document.processingStatus.toLowerCase()}`">
+                  {{ formatProcessingStatus(document.processingStatus) }}
+                </span>
+              </div>
+              <p v-if="document.processingStatus === 'FAILED' && document.processingError">
+                {{ document.processingError }}
+              </p>
+              <p v-else>{{ document.chunkCount }} chunks</p>
             </div>
             <span>{{ formatBytes(document.sizeBytes) }}</span>
           </article>

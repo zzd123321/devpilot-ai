@@ -330,6 +330,7 @@ http://localhost:8080/api/health
 - [x] 实现文档上传与文档列表
 - [x] 实现文档文本切分 chunk
 - [x] 实现关键词检索版问答来源返回
+- [x] 为文档增加处理状态
 
 ## 学习笔记 01：前后端请求链路
 
@@ -2910,3 +2911,171 @@ public ResponseEntity<ApiErrorResponse> handleInvalidDocument(InvalidDocumentExc
 ```
 
 这样读代码会比从文件树里随机点开舒服很多。
+
+## 学习笔记 10：文档处理状态
+
+本节目标：给上传后的文档增加处理状态，让系统能表达“处理中、已完成、失败”这些业务状态。
+
+### 为什么需要处理状态
+
+真实的知识库系统里，上传文件并不等于文件马上可用。
+
+一次完整的文档处理通常包括：
+
+```text
+上传文件
+  -> 保存原始文档
+  -> 解析文本
+  -> 文本切分 chunk
+  -> 生成 embedding
+  -> 写入向量数据库
+  -> 标记为可检索
+```
+
+这些步骤可能耗时，也可能失败。如果数据库里只有“文档名称、内容、上传时间”，前端就不知道文档到底能不能参与问答。
+
+所以我们给文档增加状态：
+
+```java
+public enum DocumentProcessingStatus {
+    PROCESSING,
+    READY,
+    FAILED
+}
+```
+
+状态含义：
+
+- `PROCESSING`：文档已经保存，正在处理。
+- `READY`：文档处理完成，可以参与检索。
+- `FAILED`：文档处理失败，后续可以展示错误或提供重试。
+
+### 为什么用 enum，不直接用 String
+
+如果直接写字符串：
+
+```java
+"READY"
+```
+
+坏处是容易写错，比如：
+
+```java
+"REDAY"
+```
+
+这种错误编译器发现不了，运行后才可能暴露。
+
+使用 `enum` 后，状态值只能从固定集合中选择：
+
+```java
+DocumentProcessingStatus.READY
+```
+
+这样更适合表达有限状态。
+
+### 数据库如何保存 enum
+
+Entity 中使用：
+
+```java
+@Enumerated(EnumType.STRING)
+@Column(nullable = false, length = 32)
+private DocumentProcessingStatus processingStatus;
+```
+
+这里最重要的是 `EnumType.STRING`。
+
+它会把枚举名保存成数据库字符串：
+
+```text
+READY
+PROCESSING
+FAILED
+```
+
+不要轻易使用 `EnumType.ORDINAL`，因为它保存的是枚举顺序数字。以后如果调整 enum 顺序，旧数据含义就可能错乱。
+
+### Flyway 迁移脚本
+
+本次新增了迁移：
+
+```text
+backend/src/main/resources/db/migration/V4__add_document_processing_status.sql
+```
+
+核心 SQL：
+
+```sql
+alter table knowledge_documents
+    add column processing_status varchar(32) not null default 'READY';
+
+alter table knowledge_documents
+    add column processing_error varchar(500);
+```
+
+为什么 `processing_status` 要有默认值？
+
+因为本地数据库可能已经有旧文档。旧文档创建时还没有这个字段，如果新增 `not null` 字段却不给默认值，数据库不知道旧数据该填什么，迁移就可能失败。
+
+默认成 `READY` 的含义是：历史文档在之前已经完成了文本保存和 chunk 切分，所以可以认为它们已经可检索。
+
+### 当前上传流程
+
+现在的 `KnowledgeService.uploadDocument` 流程是：
+
+```text
+校验知识库是否存在
+  -> 校验文件类型和大小
+  -> 读取文本内容
+  -> 保存 PROCESSING 文档
+  -> 切分 chunk
+  -> 保存 chunks
+  -> 更新文档为 READY
+  -> 知识库 documentCount + 1
+```
+
+对应代码：
+
+```java
+KnowledgeDocument savedDocument = documentRepository.save(document);
+List<DocumentChunk> chunks = buildChunks(savedDocument);
+chunkRepository.saveAll(chunks);
+KnowledgeDocument readyDocument = documentRepository.save(markDocumentReady(savedDocument));
+```
+
+当前还是同步处理，所以用户上传完成后通常直接看到 `READY`。但后续如果改成异步任务，`PROCESSING` 就会短暂展示在页面上。
+
+### 前端为什么也要改类型
+
+后端返回 DTO 增加字段后，前端接口类型也要同步：
+
+```ts
+export interface KnowledgeDocumentSummary {
+  id: string
+  filename: string
+  contentType: string | null
+  sizeBytes: number
+  processingStatus: 'PROCESSING' | 'READY' | 'FAILED'
+  processingError: string | null
+  createdAt: string
+  chunkCount: number
+}
+```
+
+TypeScript 中这段：
+
+```ts
+processingStatus: 'PROCESSING' | 'READY' | 'FAILED'
+```
+
+表示状态只能是三个字符串之一。它和后端的 Java enum 是一一对应的。
+
+### 本节你需要掌握的后端知识
+
+- 业务状态应该显式建模，不要只靠“有没有数据”来猜。
+- Java enum 适合表达有限状态。
+- Entity 改字段时，Flyway migration 也要同步。
+- 给旧数据新增 `not null` 字段时，要考虑默认值。
+- DTO 是前后端契约，后端改 DTO，前端类型也要跟着改。
+- 当前同步处理简单直观，后续异步处理更适合真实文件解析和 embedding 场景。

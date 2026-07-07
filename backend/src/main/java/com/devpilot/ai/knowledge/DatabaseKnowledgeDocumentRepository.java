@@ -37,6 +37,8 @@ public class DatabaseKnowledgeDocumentRepository implements KnowledgeDocumentRep
                 document.contentType(),
                 document.sizeBytes(),
                 document.content(),
+                document.processingStatus(),
+                document.processingError(),
                 document.createdAt()
         );
         return toDomain(jpaRepository.save(entity));
@@ -50,6 +52,8 @@ public class DatabaseKnowledgeDocumentRepository implements KnowledgeDocumentRep
                 entity.getContentType(),
                 entity.getSizeBytes(),
                 entity.getContent(),
+                entity.getProcessingStatus(),
+                entity.getProcessingError(),
                 entity.getCreatedAt()
         );
     }

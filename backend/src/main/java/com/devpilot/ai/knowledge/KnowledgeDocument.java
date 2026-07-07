@@ -9,7 +9,8 @@ public record KnowledgeDocument(
         String contentType,
         long sizeBytes,
         String content,
+        DocumentProcessingStatus processingStatus,
+        String processingError,
         Instant createdAt
 ) {
 }
-

@@ -7,6 +7,8 @@ public record KnowledgeDocumentSummary(
         String filename,
         String contentType,
         long sizeBytes,
+        DocumentProcessingStatus processingStatus,
+        String processingError,
         Instant createdAt,
         long chunkCount
 ) {

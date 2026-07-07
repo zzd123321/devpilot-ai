@@ -2,6 +2,8 @@ package com.devpilot.ai.knowledge;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
@@ -31,6 +33,14 @@ public class KnowledgeDocumentEntity {
     @Column(nullable = false, columnDefinition = "text")
     private String content;
 
+    // EnumType.STRING 会把 READY 这类名称存进数据库，比 ORDINAL 数字更适合长期维护。
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private DocumentProcessingStatus processingStatus;
+
+    @Column(length = 500)
+    private String processingError;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -45,6 +55,8 @@ public class KnowledgeDocumentEntity {
             String contentType,
             long sizeBytes,
             String content,
+            DocumentProcessingStatus processingStatus,
+            String processingError,
             Instant createdAt
     ) {
         this.id = id;
@@ -53,6 +65,8 @@ public class KnowledgeDocumentEntity {
         this.contentType = contentType;
         this.sizeBytes = sizeBytes;
         this.content = content;
+        this.processingStatus = processingStatus;
+        this.processingError = processingError;
         this.createdAt = createdAt;
     }
 
@@ -78,6 +92,14 @@ public class KnowledgeDocumentEntity {
 
     public String getContent() {
         return content;
+    }
+
+    public DocumentProcessingStatus getProcessingStatus() {
+        return processingStatus;
+    }
+
+    public String getProcessingError() {
+        return processingError;
     }
 
     public Instant getCreatedAt() {

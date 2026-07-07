@@ -40,7 +40,7 @@ public class KnowledgeController {
         return ResponseEntity.created(location).body(knowledgeBase);
     }
 
-    // 当前还是占位问答接口，后续会替换成 RAG：检索文档片段 -> 组装 Prompt -> 调用模型。
+    // 当前是关键词检索版问答，后续会升级为：向量检索文档片段 -> 组装 Prompt -> 调用模型。
     @PostMapping("/{knowledgeBaseId}/ask")
     public AskKnowledgeResponse ask(
             @PathVariable String knowledgeBaseId,

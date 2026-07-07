@@ -20,6 +20,8 @@ export interface KnowledgeDocumentSummary {
   filename: string
   contentType: string | null
   sizeBytes: number
+  processingStatus: 'PROCESSING' | 'READY' | 'FAILED'
+  processingError: string | null
   createdAt: string
   chunkCount: number
 }

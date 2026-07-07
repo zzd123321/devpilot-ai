@@ -284,6 +284,13 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.document-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .document-item p {
   color: #69756b;
   font-size: 13px;
@@ -294,6 +301,30 @@ h1 {
   color: #69756b;
   flex: 0 0 auto;
   font-size: 13px;
+}
+
+.status-badge {
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.status-badge-ready {
+  background: #e6f2ec;
+  color: #176b5f;
+}
+
+.status-badge-processing {
+  background: #eef0f4;
+  color: #526056;
+}
+
+.status-badge-failed {
+  background: #fff4f0;
+  color: #9d2d18;
 }
 
 @media (max-width: 820px) {

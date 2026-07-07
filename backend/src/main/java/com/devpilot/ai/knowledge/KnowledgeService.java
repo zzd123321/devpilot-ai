@@ -86,7 +86,7 @@ public class KnowledgeService {
                 .toList();
     }
 
-    // 上传文档会做两次写入：保存文档、更新知识库文档数量。
+    // 上传文档会做多次写入：保存文档、保存 chunk、更新知识库文档数量。
     // @Transactional 保证它们要么都成功，要么都回滚，避免数据不一致。
     @Transactional
     public KnowledgeDocumentSummary uploadDocument(String knowledgeBaseId, MultipartFile file) {
@@ -100,14 +100,18 @@ public class KnowledgeService {
                 file.getContentType(),
                 file.getSize(),
                 readFileContent(file),
+                DocumentProcessingStatus.PROCESSING,
+                null,
                 Instant.now()
         );
 
+        // 先保存 PROCESSING 状态。后续改成异步任务时，前端就能看到“处理中”的文档。
         KnowledgeDocument savedDocument = documentRepository.save(document);
         List<DocumentChunk> chunks = buildChunks(savedDocument);
         chunkRepository.saveAll(chunks);
+        KnowledgeDocument readyDocument = documentRepository.save(markDocumentReady(savedDocument));
         knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
-        return toDocumentSummary(savedDocument);
+        return toDocumentSummary(readyDocument);
     }
 
     private void ensureKnowledgeBaseExists(String knowledgeBaseId) {
@@ -129,8 +133,24 @@ public class KnowledgeService {
                 document.filename(),
                 document.contentType(),
                 document.sizeBytes(),
+                document.processingStatus(),
+                document.processingError(),
                 document.createdAt(),
                 chunkRepository.countByDocumentId(document.id())
+        );
+    }
+
+    private KnowledgeDocument markDocumentReady(KnowledgeDocument document) {
+        return new KnowledgeDocument(
+                document.id(),
+                document.knowledgeBaseId(),
+                document.filename(),
+                document.contentType(),
+                document.sizeBytes(),
+                document.content(),
+                DocumentProcessingStatus.READY,
+                null,
+                document.createdAt()
         );
     }
 
