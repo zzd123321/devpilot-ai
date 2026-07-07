@@ -10,17 +10,19 @@ export interface AskKnowledgeResponse {
   answer: string
   answerProvider: string
   promptPreview: string
-  sources: Array<{
-    documentId: string
-    documentName: string
-    chunkId: string
-    chunkIndex: number
-    charStart: number
-    charEnd: number
-    snippet: string
-    score: number
-    matchedTerms: string[]
-  }>
+  sources: SourceReference[]
+}
+
+export interface SourceReference {
+  documentId: string
+  documentName: string
+  chunkId: string
+  chunkIndex: number
+  charStart: number
+  charEnd: number
+  snippet: string
+  score: number
+  matchedTerms: string[]
 }
 
 export interface KnowledgeDocumentSummary {
@@ -47,6 +49,8 @@ export interface AskRecordSummary {
   question: string
   answer: string
   answerProvider: string
+  promptPreview: string
+  sourcesJson: string
   sourceCount: number
   createdAt: string
 }

@@ -26,6 +26,12 @@ public class AskRecordEntity {
     @Column(nullable = false, length = 80)
     private String answerProvider;
 
+    @Column(nullable = false, columnDefinition = "text")
+    private String promptPreview;
+
+    @Column(nullable = false, columnDefinition = "text")
+    private String sourcesJson;
+
     @Column(nullable = false)
     private int sourceCount;
 
@@ -41,6 +47,8 @@ public class AskRecordEntity {
             String question,
             String answer,
             String answerProvider,
+            String promptPreview,
+            String sourcesJson,
             int sourceCount,
             Instant createdAt
     ) {
@@ -49,6 +57,8 @@ public class AskRecordEntity {
         this.question = question;
         this.answer = answer;
         this.answerProvider = answerProvider;
+        this.promptPreview = promptPreview;
+        this.sourcesJson = sourcesJson;
         this.sourceCount = sourceCount;
         this.createdAt = createdAt;
     }
@@ -71,6 +81,14 @@ public class AskRecordEntity {
 
     public String getAnswerProvider() {
         return answerProvider;
+    }
+
+    public String getPromptPreview() {
+        return promptPreview;
+    }
+
+    public String getSourcesJson() {
+        return sourcesJson;
     }
 
     public int getSourceCount() {

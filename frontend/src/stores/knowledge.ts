@@ -14,6 +14,7 @@ import {
   type DocumentChunkSummary,
   type KnowledgeDocumentSummary,
   type KnowledgeBaseSummary,
+  type SourceReference,
 } from '@/api/knowledge'
 
 export const useKnowledgeStore = defineStore('knowledge', () => {
@@ -119,8 +120,17 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     latestAnswer.value = {
       answer: record.answer,
       answerProvider: record.answerProvider,
-      promptPreview: '',
-      sources: [],
+      promptPreview: record.promptPreview,
+      sources: parseRecordSources(record.sourcesJson),
+    }
+  }
+
+  function parseRecordSources(sourcesJson: string) {
+    try {
+      const parsed = JSON.parse(sourcesJson) as SourceReference[]
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
     }
   }
 

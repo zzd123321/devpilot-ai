@@ -7,6 +7,8 @@ public record AskRecordSummary(
         String question,
         String answer,
         String answerProvider,
+        String promptPreview,
+        String sourcesJson,
         int sourceCount,
         Instant createdAt
 ) {

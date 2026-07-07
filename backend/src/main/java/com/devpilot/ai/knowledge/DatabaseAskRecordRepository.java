@@ -28,6 +28,8 @@ public class DatabaseAskRecordRepository implements AskRecordRepository {
                 record.question(),
                 record.answer(),
                 record.answerProvider(),
+                record.promptPreview(),
+                record.sourcesJson(),
                 record.sourceCount(),
                 record.createdAt()
         );
@@ -41,6 +43,8 @@ public class DatabaseAskRecordRepository implements AskRecordRepository {
                 entity.getQuestion(),
                 entity.getAnswer(),
                 entity.getAnswerProvider(),
+                entity.getPromptPreview(),
+                entity.getSourcesJson(),
                 entity.getSourceCount(),
                 entity.getCreatedAt()
         );

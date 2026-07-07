@@ -338,6 +338,7 @@ http://localhost:8080/api/health
 - [x] 增加可替换的本地 Mock AI 回答层
 - [x] 实现问答历史记录
 - [x] 支持点击历史恢复回答
+- [x] 保存历史回答的 sources 和 prompt 快照
 
 ## 学习笔记 01：前后端请求链路
 
@@ -4239,3 +4240,99 @@ sources_json
 - 前端状态要能表达当前 Answer 区的数据来源。
 - 如果数据库没保存完整详情，前端不能凭空恢复完整 sources。
 - 产品体验上的一个小按钮，背后经常对应状态建模。
+
+### 补充：保存 sources 和 prompt 快照
+
+上一版历史记录只能恢复问题和回答，因为 `ask_records` 表没有保存完整 sources 和 prompt。
+
+本次新增迁移：
+
+```text
+backend/src/main/resources/db/migration/V6__add_ask_record_snapshots.sql
+```
+
+新增字段：
+
+```sql
+alter table ask_records
+    add column prompt_preview text not null default '';
+
+alter table ask_records
+    add column sources_json text not null default '[]';
+```
+
+为什么用新的 `V6`，不直接修改 `V5`？
+
+因为 Flyway migration 一旦在本地或别人电脑上执行过，就不应该再修改。正确做法是追加一个新的迁移，描述这次增量变化。
+
+#### 什么是快照
+
+这里的快照指的是：保存“当时那次问答”的关键结果。
+
+包括：
+
+- 当时的回答。
+- 当时的 provider。
+- 当时组装的 prompt。
+- 当时检索到的 sources。
+
+这样即使后续文档内容、chunk 切分策略、检索算法发生变化，历史记录仍然能恢复当时的结果。
+
+#### 为什么 sources 用 JSON 字符串保存
+
+`sources` 是一个数组结构，不适合直接拆成很多普通列。
+
+当前为了兼容 H2 和 PostgreSQL 学习阶段，我们先保存成文本：
+
+```java
+private String sourcesJson;
+```
+
+保存时用 Jackson：
+
+```java
+objectMapper.writeValueAsString(sources)
+```
+
+读取给前端后，前端再解析：
+
+```ts
+const parsed = JSON.parse(sourcesJson) as SourceReference[]
+```
+
+这种做法简单直观，适合当前阶段。
+
+后续如果切到 PostgreSQL，可以进一步升级为：
+
+```text
+sources_json jsonb
+```
+
+这时数据库就能更好地支持 JSON 查询。
+
+#### 为什么序列化失败时返回空数组
+
+后端保存历史时：
+
+```java
+private String serializeSources(List<SourceReference> sources) {
+    try {
+        return objectMapper.writeValueAsString(sources);
+    } catch (JsonProcessingException exception) {
+        return "[]";
+    }
+}
+```
+
+这里的取舍是：问答主流程比历史快照更重要。
+
+如果 sources 序列化偶然失败，不应该让用户整个提问失败。我们先保存一个空数组，后续可以再加日志记录。
+
+#### 这一步的知识点
+
+- 已执行的 Flyway migration 不要回改，要追加新版本。
+- 历史记录常常需要保存快照，而不是只保存当前关联 ID。
+- JSON 字符串是兼容性好的早期方案。
+- PostgreSQL 的 `jsonb` 是后续更强的方案。
+- 后端可以用 Jackson `ObjectMapper` 做对象和 JSON 字符串转换。
+- 前端恢复历史时，要把 JSON 字符串解析回结构化数组。

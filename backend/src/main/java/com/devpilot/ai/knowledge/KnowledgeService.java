@@ -3,6 +3,8 @@ package com.devpilot.ai.knowledge;
 import com.devpilot.ai.chat.ChatAnswer;
 import com.devpilot.ai.chat.ChatAnswerClient;
 import com.devpilot.ai.chat.ChatAnswerRequest;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -28,6 +30,7 @@ public class KnowledgeService {
     private final AskRecordRepository askRecordRepository;
     private final DocumentProcessingService documentProcessingService;
     private final ChatAnswerClient chatAnswerClient;
+    private final ObjectMapper objectMapper;
 
     // Service 依赖的是我们自己定义的 Repository 接口，而不是直接依赖 Spring Data JPA。
     // 这样以后从 H2/PostgreSQL 换成别的存储方案时，业务层改动会更小。
@@ -37,7 +40,8 @@ public class KnowledgeService {
             DocumentChunkRepository chunkRepository,
             AskRecordRepository askRecordRepository,
             DocumentProcessingService documentProcessingService,
-            ChatAnswerClient chatAnswerClient
+            ChatAnswerClient chatAnswerClient,
+            ObjectMapper objectMapper
     ) {
         this.knowledgeRepository = knowledgeRepository;
         this.documentRepository = documentRepository;
@@ -45,6 +49,7 @@ public class KnowledgeService {
         this.askRecordRepository = askRecordRepository;
         this.documentProcessingService = documentProcessingService;
         this.chatAnswerClient = chatAnswerClient;
+        this.objectMapper = objectMapper;
     }
 
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
@@ -194,6 +199,8 @@ public class KnowledgeService {
                 record.question(),
                 record.answer(),
                 record.answerProvider(),
+                record.promptPreview(),
+                record.sourcesJson(),
                 record.sourceCount(),
                 record.createdAt()
         );
@@ -206,9 +213,19 @@ public class KnowledgeService {
                 question,
                 response.answer(),
                 response.answerProvider(),
+                response.promptPreview(),
+                serializeSources(response.sources()),
                 response.sources().size(),
                 Instant.now()
         ));
+    }
+
+    private String serializeSources(List<SourceReference> sources) {
+        try {
+            return objectMapper.writeValueAsString(sources);
+        } catch (JsonProcessingException exception) {
+            return "[]";
+        }
     }
 
     private List<ScoredChunk> retrieveRelevantChunks(String knowledgeBaseId, String question) {
