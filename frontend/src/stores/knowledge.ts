@@ -25,7 +25,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const uploading = ref(false)
   const errorMessage = ref<string | null>(null)
   const latestAnswer = ref<AskKnowledgeResponse | null>(null)
+  const answerViewMode = ref<'live' | 'history' | null>(null)
   const askRecords = ref<AskRecordSummary[]>([])
+  const selectedAskRecordId = ref<string | null>(null)
   const documents = ref<KnowledgeDocumentSummary[]>([])
   const selectedDocumentId = ref<string | null>(null)
   const selectedDocumentChunks = ref<DocumentChunkSummary[]>([])
@@ -64,6 +66,8 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     errorMessage.value = null
     try {
       latestAnswer.value = await askKnowledgeBase(currentKnowledgeBaseId.value, question)
+      answerViewMode.value = 'live'
+      selectedAskRecordId.value = null
       await loadAskRecords()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
@@ -81,9 +85,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       currentKnowledgeBaseId.value = knowledgeBase.id
       documents.value = []
       askRecords.value = []
+      selectedAskRecordId.value = null
       selectedDocumentId.value = null
       selectedDocumentChunks.value = []
       latestAnswer.value = null
+      answerViewMode.value = null
       return true
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
@@ -101,8 +107,34 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
     try {
       askRecords.value = await listAskRecords(currentKnowledgeBaseId.value)
+      syncSelectedAskRecord()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
+    }
+  }
+
+  function selectAskRecord(record: AskRecordSummary) {
+    selectedAskRecordId.value = record.id
+    answerViewMode.value = 'history'
+    latestAnswer.value = {
+      answer: record.answer,
+      answerProvider: record.answerProvider,
+      promptPreview: '',
+      sources: [],
+    }
+  }
+
+  function syncSelectedAskRecord() {
+    if (!selectedAskRecordId.value) {
+      return
+    }
+
+    if (!askRecords.value.some((record) => record.id === selectedAskRecordId.value)) {
+      selectedAskRecordId.value = null
+      if (answerViewMode.value === 'history') {
+        latestAnswer.value = null
+        answerViewMode.value = null
+      }
     }
   }
 
@@ -203,7 +235,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     uploading,
     errorMessage,
     latestAnswer,
+    answerViewMode,
     askRecords,
+    selectedAskRecordId,
     documents,
     selectedDocumentId,
     selectedDocumentChunks,
@@ -214,6 +248,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     ask,
     create,
     uploadDocument,
+    selectAskRecord,
     selectDocument,
   }
 })

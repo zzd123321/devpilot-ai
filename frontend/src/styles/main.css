@@ -253,7 +253,8 @@ h1 {
   text-align: left;
 }
 
-.history-item:hover {
+.history-item:hover,
+.history-item-active {
   border-color: #176b5f;
   background: #f6faf6;
 }
@@ -300,6 +301,16 @@ h1 {
   font-weight: 700;
   margin-bottom: 12px;
   padding: 5px 8px;
+}
+
+.answer-mode {
+  border-left: 3px solid #176b5f;
+  background: #f6faf6;
+  color: #526056;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  padding: 8px 10px;
 }
 
 .sources {

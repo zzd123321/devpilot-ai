@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import AppShell from '@/components/AppShell.vue'
+import type { AskRecordSummary } from '@/api/knowledge'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const store = useKnowledgeStore()
@@ -33,8 +34,9 @@ function submitQuestion() {
   void store.ask(trimmed)
 }
 
-function reuseQuestion(recordQuestion: string) {
-  question.value = recordQuestion
+function selectAskRecord(record: AskRecordSummary) {
+  question.value = record.question
+  store.selectAskRecord(record)
 }
 
 function submitKnowledgeBase() {
@@ -130,7 +132,8 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
             :key="record.id"
             type="button"
             class="history-item"
-            @click="reuseQuestion(record.question)"
+            :class="{ 'history-item-active': record.id === store.selectedAskRecordId }"
+            @click="selectAskRecord(record)"
           >
             <strong>{{ record.question }}</strong>
             <span>{{ record.sourceCount }} sources · {{ record.answerProvider }}</span>
@@ -149,8 +152,11 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
           <div class="answer-provider">
             Answer provider: {{ store.latestAnswer.answerProvider }}
           </div>
+          <div v-if="store.answerViewMode === 'history'" class="answer-mode">
+            Showing a saved answer from ask history.
+          </div>
           <p class="answer">{{ store.latestAnswer.answer }}</p>
-          <div class="sources">
+          <div v-if="store.latestAnswer.sources.length" class="sources">
             <h3>Sources</h3>
             <article v-for="source in store.latestAnswer.sources" :key="source.chunkId" class="source">
               <div class="source-heading">

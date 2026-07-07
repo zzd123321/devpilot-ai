@@ -337,6 +337,7 @@ http://localhost:8080/api/health
 - [x] 实现 RAG Prompt 组装预览
 - [x] 增加可替换的本地 Mock AI 回答层
 - [x] 实现问答历史记录
+- [x] 支持点击历史恢复回答
 
 ## 学习笔记 01：前后端请求链路
 
@@ -4175,3 +4176,66 @@ const askRecords = ref<AskRecordSummary[]>([])
 - 后端内部模型和前端 DTO 即使相似，也可以保持分离。
 - 前端历史记录适合放在 Pinia，因为多个页面或组件后续可能复用。
 - AI 应用除了模型能力，也需要管理用户交互数据。
+
+### 补充：点击历史恢复回答
+
+上一版历史记录只能把问题填回输入框：
+
+```ts
+question.value = record.question
+```
+
+这样适合“复问”，但不能回看当时保存的回答。
+
+本次在 Pinia 里新增了两个前端状态：
+
+```ts
+const answerViewMode = ref<'live' | 'history' | null>(null)
+const selectedAskRecordId = ref<string | null>(null)
+```
+
+它们的含义是：
+
+- `answerViewMode = 'live'`：Answer 区展示的是刚刚请求后端得到的新回答。
+- `answerViewMode = 'history'`：Answer 区展示的是从历史记录恢复出来的旧回答。
+- `selectedAskRecordId`：当前选中的历史记录 ID，用来高亮列表项。
+
+点击历史记录时：
+
+```ts
+function selectAskRecord(record: AskRecordSummary) {
+  selectedAskRecordId.value = record.id
+  answerViewMode.value = 'history'
+  latestAnswer.value = {
+    answer: record.answer,
+    answerProvider: record.answerProvider,
+    promptPreview: '',
+    sources: [],
+  }
+}
+```
+
+这里要注意：历史表当前只保存了问题、回答、provider 和 source 数量，没有保存完整 sources 和 prompt，所以恢复历史回答时：
+
+```ts
+promptPreview: ''
+sources: []
+```
+
+这不是 bug，而是当前表结构的取舍。
+
+后续如果想完整恢复当时的 sources 和 prompt，可以继续给 `ask_records` 表增加：
+
+```text
+prompt_preview
+sources_json
+```
+
+这会引出一个新的后端知识点：如何保存 JSON 快照。
+
+本节你需要记住：
+
+- “复用问题”和“恢复回答”是两个不同交互。
+- 前端状态要能表达当前 Answer 区的数据来源。
+- 如果数据库没保存完整详情，前端不能凭空恢复完整 sources。
+- 产品体验上的一个小按钮，背后经常对应状态建模。
