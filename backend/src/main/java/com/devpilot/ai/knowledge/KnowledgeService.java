@@ -65,6 +65,7 @@ public class KnowledgeService {
         if (scoredChunks.isEmpty()) {
             return new AskKnowledgeResponse(
                     "当前知识库还没有检索到相关片段。你可以先上传 Markdown 或文本文件，再重新提问。",
+                    "",
                     List.of()
             );
         }
@@ -72,10 +73,12 @@ public class KnowledgeService {
         List<SourceReference> sources = scoredChunks.stream()
                 .map(this::toSourceReference)
                 .toList();
+        String promptPreview = buildPromptPreview(question, scoredChunks);
 
         return new AskKnowledgeResponse(
                 "我先用关键词检索找到了 %d 个相关片段。下一步接入 AI 后，会把这些片段作为上下文生成自然语言回答。"
                         .formatted(sources.size()),
+                promptPreview,
                 sources
         );
     }
@@ -245,6 +248,36 @@ public class KnowledgeService {
                 scoredChunk.score(),
                 scoredChunk.matchedTerms()
         );
+    }
+
+    private String buildPromptPreview(String question, List<ScoredChunk> scoredChunks) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("你是 DevPilot AI，一个严谨的项目知识库助手。\n");
+        prompt.append("请只根据【参考资料】回答【用户问题】。如果资料不足，请明确说明不知道，不要编造。\n\n");
+        prompt.append("【用户问题】\n");
+        prompt.append(question).append("\n\n");
+        prompt.append("【参考资料】\n");
+
+        for (int index = 0; index < scoredChunks.size(); index++) {
+            DocumentChunk chunk = scoredChunks.get(index).chunk();
+            String documentName = documentRepository.findById(chunk.documentId())
+                    .map(KnowledgeDocument::filename)
+                    .orElse("Unknown document");
+
+            prompt.append("资料 ").append(index + 1)
+                    .append("：")
+                    .append(documentName)
+                    .append(" / Chunk #")
+                    .append(chunk.chunkIndex() + 1)
+                    .append("\n");
+            prompt.append(chunk.content()).append("\n\n");
+        }
+
+        prompt.append("【回答要求】\n");
+        prompt.append("1. 先给出直接回答。\n");
+        prompt.append("2. 如果引用了资料，请说明来自哪个文档或 chunk。\n");
+        prompt.append("3. 如果资料不足，请列出还需要补充什么信息。\n");
+        return prompt.toString();
     }
 
     private String snippet(String content) {

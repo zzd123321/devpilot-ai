@@ -307,6 +307,32 @@ h1 {
   padding: 4px 7px;
 }
 
+.prompt-preview {
+  border-top: 1px solid #e2e8db;
+  margin-top: 22px;
+  padding-top: 18px;
+}
+
+.prompt-preview h3 {
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+.prompt-preview pre {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #e2e8db;
+  border-radius: 8px;
+  background: #f8faf7;
+  color: #273129;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .document-list {
   display: grid;
   gap: 10px;

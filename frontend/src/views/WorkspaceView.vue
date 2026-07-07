@@ -140,6 +140,10 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
               </div>
             </article>
           </div>
+          <div v-if="store.latestAnswer.promptPreview" class="prompt-preview">
+            <h3>Prompt Preview</h3>
+            <pre>{{ store.latestAnswer.promptPreview }}</pre>
+          </div>
         </template>
       </div>
     </section>

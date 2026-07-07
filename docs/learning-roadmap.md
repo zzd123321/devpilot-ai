@@ -334,6 +334,7 @@ http://localhost:8080/api/health
 - [x] 实现文档异步处理与前端轮询
 - [x] 实现文档 chunk 预览
 - [x] 增强问答 sources 的检索调试信息
+- [x] 实现 RAG Prompt 组装预览
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3644,3 +3645,176 @@ rank
 - score 用来排序，matchedTerms 用来解释。
 - 后端可以用小 record 包装中间计算结果。
 - 前端展示调试信息能帮助发现检索质量问题。
+
+## 学习笔记 14：RAG Prompt 组装预览
+
+本节目标：在不接真正 AI 模型之前，先把检索到的 chunks 组装成 Prompt，并在前端展示出来。
+
+### 为什么先做 Prompt 预览
+
+RAG 的完整链路是：
+
+```text
+用户问题
+  -> 检索相关 chunks
+  -> 组装 Prompt
+  -> 调用大模型
+  -> 返回回答和引用
+```
+
+我们现在已经完成了：
+
+```text
+用户问题
+  -> 关键词检索相关 chunks
+  -> 返回 sources
+```
+
+下一步不是马上接模型，而是先看清楚“准备发给模型的 Prompt 长什么样”。
+
+这样做的好处：
+
+- 你能理解模型到底会看到什么上下文。
+- 可以提前发现 prompt 太长、信息太乱、引用不清晰的问题。
+- 后续接 OpenAI 或 Spring AI 时，只需要把这个 prompt 交给模型。
+- 如果模型回答不好，可以先判断是 prompt 问题还是模型问题。
+
+### 后端响应新增 promptPreview
+
+`AskKnowledgeResponse` 从：
+
+```java
+public record AskKnowledgeResponse(
+        String answer,
+        List<SourceReference> sources
+) {
+}
+```
+
+变成：
+
+```java
+public record AskKnowledgeResponse(
+        String answer,
+        String promptPreview,
+        List<SourceReference> sources
+) {
+}
+```
+
+`promptPreview` 不是最终用户回答，而是调试信息。它帮助我们看见后端组装出来的 prompt。
+
+### Prompt 的结构
+
+当前 Prompt 分成四部分：
+
+```text
+角色说明
+用户问题
+参考资料
+回答要求
+```
+
+代码大致是：
+
+```java
+prompt.append("你是 DevPilot AI，一个严谨的项目知识库助手。\n");
+prompt.append("请只根据【参考资料】回答【用户问题】。如果资料不足，请明确说明不知道，不要编造。\n\n");
+prompt.append("【用户问题】\n");
+prompt.append(question).append("\n\n");
+prompt.append("【参考资料】\n");
+```
+
+然后把检索到的 chunks 逐个拼进去：
+
+```java
+for (int index = 0; index < scoredChunks.size(); index++) {
+    DocumentChunk chunk = scoredChunks.get(index).chunk();
+    ...
+    prompt.append("资料 ").append(index + 1)
+            .append("：")
+            .append(documentName)
+            .append(" / Chunk #")
+            .append(chunk.chunkIndex() + 1)
+            .append("\n");
+    prompt.append(chunk.content()).append("\n\n");
+}
+```
+
+最后追加回答规则：
+
+```text
+1. 先给出直接回答。
+2. 如果引用了资料，请说明来自哪个文档或 chunk。
+3. 如果资料不足，请列出还需要补充什么信息。
+```
+
+### Prompt 不是普通字符串拼接
+
+虽然代码上看是字符串拼接，但 Prompt 其实是“模型输入协议”。
+
+一个好的 RAG Prompt 通常要明确：
+
+- 角色：模型应该扮演什么助手。
+- 边界：只能根据资料回答，不要编造。
+- 问题：用户到底问了什么。
+- 上下文：检索到的资料是什么。
+- 输出要求：回答格式、引用方式、不足时怎么处理。
+
+这些规则会直接影响模型行为。
+
+### 前端为什么要显示 Prompt Preview
+
+前端现在会在 Answer 区域下方显示：
+
+```text
+Prompt Preview
+```
+
+并用 `<pre>` 保留换行格式。
+
+这样你提问后可以同时看到：
+
+- 简单占位回答。
+- 检索 sources。
+- 完整 prompt。
+
+如果后续接 AI 后回答不理想，可以按这个顺序排查：
+
+```text
+1. sources 是否相关
+2. prompt 是否清晰
+3. prompt 是否过长
+4. 回答要求是否明确
+5. 模型能力是否足够
+```
+
+### 为什么暂时不接真实 AI
+
+因为接 AI 之前，最好先把 RAG 的本地链路跑顺：
+
+```text
+文档上传
+  -> chunk
+  -> 检索
+  -> sources
+  -> prompt
+```
+
+否则一上来接 AI，回答不好时很难判断问题出在哪里：
+
+- 是文件没切好？
+- 是检索没命中？
+- 是 prompt 没写好？
+- 是模型没理解？
+- 是 API 配置错了？
+
+现在先把 prompt 暴露出来，是为了降低后续接 AI 的调试难度。
+
+### 本节你需要掌握的知识
+
+- Prompt 是 RAG 从检索走向生成的桥。
+- Prompt 应该包含角色、问题、上下文和回答要求。
+- promptPreview 是调试字段，不是最终业务答案。
+- 接 AI 前先看 prompt，可以大幅降低排查难度。
+- 一个 AI 应用的问题经常不在模型，而在检索结果或 prompt 组织。
