@@ -331,6 +331,7 @@ http://localhost:8080/api/health
 - [x] 实现文档文本切分 chunk
 - [x] 实现关键词检索版问答来源返回
 - [x] 为文档增加处理状态
+- [x] 实现文档异步处理与前端轮询
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3079,3 +3080,240 @@ processingStatus: 'PROCESSING' | 'READY' | 'FAILED'
 - 给旧数据新增 `not null` 字段时，要考虑默认值。
 - DTO 是前后端契约，后端改 DTO，前端类型也要跟着改。
 - 当前同步处理简单直观，后续异步处理更适合真实文件解析和 embedding 场景。
+
+## 学习笔记 11：异步文档处理
+
+本节目标：把文档切分从上传请求中拆出来，交给后台线程处理，让上传接口更接近真实项目的设计。
+
+### 为什么要异步处理
+
+上一节我们已经有了文档状态：
+
+```text
+PROCESSING -> READY / FAILED
+```
+
+但当时文档切分仍然发生在上传接口里面：
+
+```text
+前端上传文件
+  -> 后端保存文档
+  -> 后端切分 chunk
+  -> 后端保存 chunk
+  -> 后端返回响应
+```
+
+这个流程的问题是：如果后续加入 PDF 解析、embedding、向量入库，上传接口会越来越慢。用户可能只是上传一个文件，却要等几十秒才能收到响应。
+
+更真实的做法是：
+
+```text
+前端上传文件
+  -> 后端保存原始文档，状态为 PROCESSING
+  -> 后端立即返回响应
+  -> 后台线程继续切分 chunk
+  -> 成功后标记 READY
+  -> 失败后标记 FAILED
+```
+
+这样用户能更快看到“文件已接收”，后端耗时任务也能独立处理。
+
+### 本次后端拆分
+
+新增了异步配置：
+
+```text
+backend/src/main/java/com/devpilot/ai/config/AsyncConfig.java
+```
+
+核心代码：
+
+```java
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+    @Bean
+    public Executor documentProcessingExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("document-processing-");
+        executor.initialize();
+        return executor;
+    }
+}
+```
+
+`@EnableAsync` 的作用是开启 Spring 的异步方法能力。
+
+`ThreadPoolTaskExecutor` 的作用是创建一个线程池。线程池可以理解成“后台工人队伍”：
+
+- `corePoolSize`：平时保留几个工人。
+- `maxPoolSize`：忙的时候最多几个工人。
+- `queueCapacity`：工人忙不过来时，队列里最多排多少任务。
+- `threadNamePrefix`：给线程起名字，方便以后看日志排查问题。
+
+### 为什么要单独创建 DocumentProcessingService
+
+新增了：
+
+```text
+backend/src/main/java/com/devpilot/ai/knowledge/DocumentProcessingService.java
+```
+
+里面的核心方法是：
+
+```java
+@Async("documentProcessingExecutor")
+@Transactional
+public void processDocument(String documentId) {
+    ...
+}
+```
+
+为什么不直接把 `@Async` 写在 `KnowledgeService` 的私有方法上？
+
+因为 Spring 的 `@Async` 依赖代理机制。简单理解：外部调用 Spring Bean 的 public 方法时，Spring 可以在中间“拦一下”，把这个方法丢到线程池里执行。
+
+如果同一个类内部自己调用自己的方法，通常不会经过这个代理，`@Async` 就可能不生效。
+
+所以我们把后台处理拆成独立 Service：
+
+```text
+KnowledgeService
+  -> 调用 DocumentProcessingService.processDocument
+```
+
+这样调用会经过 Spring 代理，异步才更可靠。
+
+### 为什么后台线程只传 documentId
+
+代码里没有把整个 `KnowledgeDocument` 对象直接传给后台线程，而是传：
+
+```java
+documentProcessingService.processDocument(documentId);
+```
+
+后台线程再重新查数据库：
+
+```java
+documentRepository.findById(documentId)
+```
+
+原因是：JPA Entity 和数据库会话有关，不适合跨线程传递。跨线程传 `id` 更稳定，也更像真实系统里的任务消息。
+
+以后如果接入消息队列，也通常是传：
+
+```json
+{
+  "documentId": "..."
+}
+```
+
+而不是传整个 Entity。
+
+### 为什么要等事务提交后再启动后台线程
+
+上传方法仍然有事务：
+
+```java
+@Transactional
+public KnowledgeDocumentSummary uploadDocument(...) {
+    ...
+}
+```
+
+如果在事务还没提交时就启动后台线程，后台线程可能立刻去数据库查文档，但这条文档记录还没真正提交，查不到。
+
+所以本次使用：
+
+```java
+TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+    @Override
+    public void afterCommit() {
+        documentProcessingService.processDocument(documentId);
+    }
+});
+```
+
+意思是：等当前事务提交成功之后，再启动后台处理。
+
+这类细节非常后端。很多异步任务的 bug 都来自“任务跑得太快，数据还没提交”。
+
+### 当前上传链路
+
+现在上传文档变成：
+
+```text
+POST /documents
+  -> KnowledgeController.uploadDocument
+  -> KnowledgeService.uploadDocument
+  -> 保存 PROCESSING 文档
+  -> documentCount + 1
+  -> 当前事务提交
+  -> afterCommit 触发后台处理
+  -> DocumentProcessingService.processDocument
+  -> 切分 chunk
+  -> 保存 chunks
+  -> 更新文档为 READY
+```
+
+如果切分失败：
+
+```text
+DocumentProcessingService.processDocument
+  -> catch RuntimeException
+  -> 更新文档为 FAILED
+  -> 保存 processingError
+```
+
+### 前端为什么需要轮询
+
+上传接口现在可能很快返回：
+
+```json
+{
+  "processingStatus": "PROCESSING"
+}
+```
+
+但后端处理完成是在稍后发生的。前端如果不刷新，就会一直停留在 `PROCESSING`。
+
+所以 store 里增加了轻量轮询：
+
+```ts
+function scheduleProcessingPollIfNeeded() {
+  if (!documents.value.some((document) => document.processingStatus === 'PROCESSING')) {
+    return
+  }
+
+  if (processingPollTimer !== null) {
+    return
+  }
+
+  processingPollTimer = window.setTimeout(async () => {
+    processingPollTimer = null
+    await loadDocuments()
+  }, 1500)
+}
+```
+
+这段逻辑的意思是：
+
+- 如果没有处理中状态，就不轮询。
+- 如果已经有一个定时器，就不重复创建。
+- 1.5 秒后重新加载文档列表。
+- 加载后如果仍然有 `PROCESSING`，再安排下一次轮询。
+
+后续更高级的方式可以用 WebSocket 或 SSE，但当前阶段轮询更简单，也更容易理解。
+
+### 本节你需要掌握的后端知识
+
+- 耗时任务不应该长期阻塞 HTTP 请求。
+- `@Async` 可以把任务交给后台线程。
+- 异步能力通常要配线程池，不要完全依赖默认配置。
+- `@Async` 要通过 Spring Bean 代理调用才可靠。
+- 后台任务最好传 ID，再自己查数据库。
+- 异步任务要注意事务提交时机。
+- 前端面对后台任务时，通常需要轮询、SSE 或 WebSocket 来刷新状态。

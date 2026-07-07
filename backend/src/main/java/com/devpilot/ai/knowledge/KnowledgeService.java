@@ -11,6 +11,8 @@ import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 @Service
@@ -19,7 +21,7 @@ public class KnowledgeService {
     private final KnowledgeRepository knowledgeRepository;
     private final KnowledgeDocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
-    private final TextChunker textChunker;
+    private final DocumentProcessingService documentProcessingService;
 
     // Service 依赖的是我们自己定义的 Repository 接口，而不是直接依赖 Spring Data JPA。
     // 这样以后从 H2/PostgreSQL 换成别的存储方案时，业务层改动会更小。
@@ -27,12 +29,12 @@ public class KnowledgeService {
             KnowledgeRepository knowledgeRepository,
             KnowledgeDocumentRepository documentRepository,
             DocumentChunkRepository chunkRepository,
-            TextChunker textChunker
+            DocumentProcessingService documentProcessingService
     ) {
         this.knowledgeRepository = knowledgeRepository;
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
-        this.textChunker = textChunker;
+        this.documentProcessingService = documentProcessingService;
     }
 
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
@@ -86,8 +88,7 @@ public class KnowledgeService {
                 .toList();
     }
 
-    // 上传文档会做多次写入：保存文档、保存 chunk、更新知识库文档数量。
-    // @Transactional 保证它们要么都成功，要么都回滚，避免数据不一致。
+    // 上传接口只负责保存原始文档和标记 PROCESSING，耗时的切分逻辑交给后台线程。
     @Transactional
     public KnowledgeDocumentSummary uploadDocument(String knowledgeBaseId, MultipartFile file) {
         ensureKnowledgeBaseExists(knowledgeBaseId);
@@ -105,13 +106,10 @@ public class KnowledgeService {
                 Instant.now()
         );
 
-        // 先保存 PROCESSING 状态。后续改成异步任务时，前端就能看到“处理中”的文档。
         KnowledgeDocument savedDocument = documentRepository.save(document);
-        List<DocumentChunk> chunks = buildChunks(savedDocument);
-        chunkRepository.saveAll(chunks);
-        KnowledgeDocument readyDocument = documentRepository.save(markDocumentReady(savedDocument));
         knowledgeRepository.incrementDocumentCount(knowledgeBaseId);
-        return toDocumentSummary(readyDocument);
+        dispatchDocumentProcessingAfterCommit(savedDocument.id());
+        return toDocumentSummary(savedDocument);
     }
 
     private void ensureKnowledgeBaseExists(String knowledgeBaseId) {
@@ -138,36 +136,6 @@ public class KnowledgeService {
                 document.createdAt(),
                 chunkRepository.countByDocumentId(document.id())
         );
-    }
-
-    private KnowledgeDocument markDocumentReady(KnowledgeDocument document) {
-        return new KnowledgeDocument(
-                document.id(),
-                document.knowledgeBaseId(),
-                document.filename(),
-                document.contentType(),
-                document.sizeBytes(),
-                document.content(),
-                DocumentProcessingStatus.READY,
-                null,
-                document.createdAt()
-        );
-    }
-
-    private List<DocumentChunk> buildChunks(KnowledgeDocument document) {
-        return textChunker.split(document.content())
-                .stream()
-                .map(chunk -> new DocumentChunk(
-                        UUID.randomUUID().toString(),
-                        document.knowledgeBaseId(),
-                        document.id(),
-                        chunk.index(),
-                        chunk.content(),
-                        chunk.charStart(),
-                        chunk.charEnd(),
-                        Instant.now()
-                ))
-                .toList();
     }
 
     private List<ScoredChunk> retrieveRelevantChunks(String knowledgeBaseId, String question) {
@@ -204,6 +172,21 @@ public class KnowledgeService {
         }
 
         return terms;
+    }
+
+    private void dispatchDocumentProcessingAfterCommit(String documentId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            documentProcessingService.processDocument(documentId);
+            return;
+        }
+
+        // 等上传事务真正提交后再启动后台线程，避免后台线程读不到刚保存的文档。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                documentProcessingService.processDocument(documentId);
+            }
+        });
     }
 
     private double scoreChunk(DocumentChunk chunk, Set<String> terms) {

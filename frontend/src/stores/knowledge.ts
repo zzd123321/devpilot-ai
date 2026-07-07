@@ -22,6 +22,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const errorMessage = ref<string | null>(null)
   const latestAnswer = ref<AskKnowledgeResponse | null>(null)
   const documents = ref<KnowledgeDocumentSummary[]>([])
+  let processingPollTimer: number | null = null
 
   async function loadKnowledgeBases() {
     try {
@@ -42,6 +43,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
     try {
       documents.value = await listKnowledgeDocuments(currentKnowledgeBaseId.value)
+      scheduleProcessingPollIfNeeded()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
     }
@@ -87,6 +89,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       await loadKnowledgeBases()
       currentKnowledgeBaseId.value = knowledgeBaseId
       await loadDocuments()
+      scheduleProcessingPollIfNeeded()
       return true
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
@@ -94,6 +97,22 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     } finally {
       uploading.value = false
     }
+  }
+
+  function scheduleProcessingPollIfNeeded() {
+    if (!documents.value.some((document) => document.processingStatus === 'PROCESSING')) {
+      return
+    }
+
+    if (processingPollTimer !== null) {
+      return
+    }
+
+    // 文档处理在后端异步进行，前端用轻量轮询刷新状态，直到没有 PROCESSING 文档。
+    processingPollTimer = window.setTimeout(async () => {
+      processingPollTimer = null
+      await loadDocuments()
+    }, 1500)
   }
 
   return {
