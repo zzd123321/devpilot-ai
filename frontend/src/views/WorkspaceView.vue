@@ -23,6 +23,7 @@ watch(
   () => store.currentKnowledgeBaseId,
   () => {
     void store.loadDocuments()
+    void store.loadAskRecords()
   },
 )
 
@@ -30,6 +31,10 @@ function submitQuestion() {
   const trimmed = question.value.trim()
   if (!trimmed) return
   void store.ask(trimmed)
+}
+
+function reuseQuestion(recordQuestion: string) {
+  question.value = recordQuestion
 }
 
 function submitKnowledgeBase() {
@@ -112,6 +117,25 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
         <button class="primary-button" :disabled="store.loading" @click="submitQuestion">
           {{ store.loading ? 'Thinking...' : 'Ask knowledge base' }}
         </button>
+        <div class="history-list">
+          <div class="history-heading">
+            <h3>Recent Questions</h3>
+            <span>{{ store.askRecords.length }}</span>
+          </div>
+          <p v-if="!store.askRecords.length" class="empty-state">
+            Ask history will appear here.
+          </p>
+          <button
+            v-for="record in store.askRecords"
+            :key="record.id"
+            type="button"
+            class="history-item"
+            @click="reuseQuestion(record.question)"
+          >
+            <strong>{{ record.question }}</strong>
+            <span>{{ record.sourceCount }} sources · {{ record.answerProvider }}</span>
+          </button>
+        </div>
       </div>
 
       <div class="panel answer-panel">

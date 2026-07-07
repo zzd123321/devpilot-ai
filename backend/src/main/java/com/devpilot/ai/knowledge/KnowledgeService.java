@@ -25,6 +25,7 @@ public class KnowledgeService {
     private final KnowledgeRepository knowledgeRepository;
     private final KnowledgeDocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
+    private final AskRecordRepository askRecordRepository;
     private final DocumentProcessingService documentProcessingService;
     private final ChatAnswerClient chatAnswerClient;
 
@@ -34,12 +35,14 @@ public class KnowledgeService {
             KnowledgeRepository knowledgeRepository,
             KnowledgeDocumentRepository documentRepository,
             DocumentChunkRepository chunkRepository,
+            AskRecordRepository askRecordRepository,
             DocumentProcessingService documentProcessingService,
             ChatAnswerClient chatAnswerClient
     ) {
         this.knowledgeRepository = knowledgeRepository;
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
+        this.askRecordRepository = askRecordRepository;
         this.documentProcessingService = documentProcessingService;
         this.chatAnswerClient = chatAnswerClient;
     }
@@ -69,12 +72,14 @@ public class KnowledgeService {
         List<ScoredChunk> scoredChunks = retrieveRelevantChunks(knowledgeBase.id(), question);
 
         if (scoredChunks.isEmpty()) {
-            return new AskKnowledgeResponse(
+            AskKnowledgeResponse response = new AskKnowledgeResponse(
                     "当前知识库还没有检索到相关片段。你可以先上传 Markdown 或文本文件，再重新提问。",
                     "none",
                     "",
                     List.of()
             );
+            saveAskRecord(knowledgeBase.id(), question, response);
+            return response;
         }
 
         List<SourceReference> sources = scoredChunks.stream()
@@ -83,12 +88,22 @@ public class KnowledgeService {
         String promptPreview = buildPromptPreview(question, scoredChunks);
         ChatAnswer chatAnswer = chatAnswerClient.generate(new ChatAnswerRequest(question, promptPreview, sources));
 
-        return new AskKnowledgeResponse(
+        AskKnowledgeResponse response = new AskKnowledgeResponse(
                 chatAnswer.content(),
                 chatAnswer.provider(),
                 promptPreview,
                 sources
         );
+        saveAskRecord(knowledgeBase.id(), question, response);
+        return response;
+    }
+
+    public List<AskRecordSummary> listAskRecords(String knowledgeBaseId) {
+        ensureKnowledgeBaseExists(knowledgeBaseId);
+        return askRecordRepository.findRecentByKnowledgeBaseId(knowledgeBaseId)
+                .stream()
+                .map(this::toAskRecordSummary)
+                .toList();
     }
 
     public List<KnowledgeDocumentSummary> listDocuments(String knowledgeBaseId) {
@@ -171,6 +186,29 @@ public class KnowledgeService {
                 chunk.charStart(),
                 chunk.charEnd()
         );
+    }
+
+    private AskRecordSummary toAskRecordSummary(AskRecord record) {
+        return new AskRecordSummary(
+                record.id(),
+                record.question(),
+                record.answer(),
+                record.answerProvider(),
+                record.sourceCount(),
+                record.createdAt()
+        );
+    }
+
+    private void saveAskRecord(String knowledgeBaseId, String question, AskKnowledgeResponse response) {
+        askRecordRepository.save(new AskRecord(
+                UUID.randomUUID().toString(),
+                knowledgeBaseId,
+                question,
+                response.answer(),
+                response.answerProvider(),
+                response.sources().size(),
+                Instant.now()
+        ));
     }
 
     private List<ScoredChunk> retrieveRelevantChunks(String knowledgeBaseId, String question) {

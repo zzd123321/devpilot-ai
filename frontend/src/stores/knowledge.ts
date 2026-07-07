@@ -4,10 +4,12 @@ import { getApiErrorMessage } from '@/api/http'
 import {
   askKnowledgeBase,
   createKnowledgeBase,
+  listAskRecords,
   listDocumentChunks,
   listKnowledgeDocuments,
   listKnowledgeBases,
   uploadKnowledgeDocument,
+  type AskRecordSummary,
   type AskKnowledgeResponse,
   type DocumentChunkSummary,
   type KnowledgeDocumentSummary,
@@ -23,6 +25,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const uploading = ref(false)
   const errorMessage = ref<string | null>(null)
   const latestAnswer = ref<AskKnowledgeResponse | null>(null)
+  const askRecords = ref<AskRecordSummary[]>([])
   const documents = ref<KnowledgeDocumentSummary[]>([])
   const selectedDocumentId = ref<string | null>(null)
   const selectedDocumentChunks = ref<DocumentChunkSummary[]>([])
@@ -35,6 +38,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       currentKnowledgeBaseId.value = knowledgeBases.value[0]?.id ?? 'demo'
       // 知识库列表加载完后，顺手加载当前知识库的文档列表。
       await loadDocuments()
+      await loadAskRecords()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
     }
@@ -60,6 +64,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     errorMessage.value = null
     try {
       latestAnswer.value = await askKnowledgeBase(currentKnowledgeBaseId.value, question)
+      await loadAskRecords()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
     } finally {
@@ -75,6 +80,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       await loadKnowledgeBases()
       currentKnowledgeBaseId.value = knowledgeBase.id
       documents.value = []
+      askRecords.value = []
       selectedDocumentId.value = null
       selectedDocumentChunks.value = []
       latestAnswer.value = null
@@ -84,6 +90,19 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       return false
     } finally {
       creating.value = false
+    }
+  }
+
+  async function loadAskRecords() {
+    if (!currentKnowledgeBaseId.value) {
+      askRecords.value = []
+      return
+    }
+
+    try {
+      askRecords.value = await listAskRecords(currentKnowledgeBaseId.value)
+    } catch (error) {
+      errorMessage.value = getApiErrorMessage(error)
     }
   }
 
@@ -184,12 +203,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     uploading,
     errorMessage,
     latestAnswer,
+    askRecords,
     documents,
     selectedDocumentId,
     selectedDocumentChunks,
     loadingChunks,
     loadKnowledgeBases,
     loadDocuments,
+    loadAskRecords,
     ask,
     create,
     uploadDocument,

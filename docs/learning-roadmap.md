@@ -336,6 +336,7 @@ http://localhost:8080/api/health
 - [x] 增强问答 sources 的检索调试信息
 - [x] 实现 RAG Prompt 组装预览
 - [x] 增加可替换的本地 Mock AI 回答层
+- [x] 实现问答历史记录
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3981,3 +3982,196 @@ Answer provider: openai
 - 配置项可以控制当前使用哪种 provider。
 - DTO 可以带 provider 信息，方便前端和调试。
 - 先把本地链路跑通，再接真实外部服务，是更稳的工程节奏。
+
+## 学习笔记 16：问答历史记录
+
+本节目标：每次提问后，把问题、回答、回答来源 provider、source 数量保存下来，并在前端展示最近问过的问题。
+
+### 为什么要做问答历史
+
+真实 AI 产品通常不会只展示当前一次回答，还会保留历史。
+
+问答历史有几个价值：
+
+- 用户可以回看之前问过什么。
+- 可以复用旧问题继续追问。
+- 后端可以分析哪些问题经常没有命中 sources。
+- 后续可以扩展成完整会话系统。
+- 面试时可以讲清楚“AI 应用不只是调模型，还要管理交互数据”。
+
+### 为什么单独建 ask_records 表
+
+本次新增迁移：
+
+```text
+backend/src/main/resources/db/migration/V5__create_ask_records.sql
+```
+
+表结构核心字段：
+
+```sql
+create table ask_records (
+    id varchar(36) primary key,
+    knowledge_base_id varchar(36) not null,
+    question text not null,
+    answer text not null,
+    answer_provider varchar(80) not null,
+    source_count integer not null,
+    created_at timestamp not null default current_timestamp
+);
+```
+
+为什么不把历史记录放进 `knowledge_bases`？
+
+因为知识库表描述的是知识库本身，比如名称、文档数量。
+
+为什么不放进 `knowledge_documents`？
+
+因为文档表描述的是上传的资料，不是用户的提问行为。
+
+问答记录是一个独立业务概念，所以单独建表更清晰。
+
+### 后端新增模型
+
+新增内部领域对象：
+
+```java
+public record AskRecord(
+        String id,
+        String knowledgeBaseId,
+        String question,
+        String answer,
+        String answerProvider,
+        int sourceCount,
+        Instant createdAt
+) {
+}
+```
+
+新增返回给前端的 DTO：
+
+```java
+public record AskRecordSummary(
+        String id,
+        String question,
+        String answer,
+        String answerProvider,
+        int sourceCount,
+        Instant createdAt
+) {
+}
+```
+
+当前 `AskRecord` 和 `AskRecordSummary` 字段很接近，但仍然分开。
+
+原因是：以后内部可能保存更多字段，比如 prompt、完整 sources、token 用量；前端不一定都需要。
+
+### Repository 分层
+
+本次新增：
+
+```text
+JpaAskRecordRepository
+AskRecordRepository
+DatabaseAskRecordRepository
+```
+
+`JpaAskRecordRepository` 负责直接操作 JPA：
+
+```java
+List<AskRecordEntity> findTop20ByKnowledgeBaseIdOrderByCreatedAtDesc(String knowledgeBaseId);
+```
+
+这句方法名很长，但 Spring Data JPA 能根据方法名自动生成查询：
+
+```text
+findTop20
+  -> 最多查 20 条
+ByKnowledgeBaseId
+  -> 按 knowledgeBaseId 过滤
+OrderByCreatedAtDesc
+  -> 按 createdAt 倒序
+```
+
+`DatabaseAskRecordRepository` 再把 JPA Entity 转成领域对象，给 Service 使用。
+
+### Service 如何保存历史
+
+`KnowledgeService.ask` 现在在生成回答后会调用：
+
+```java
+saveAskRecord(knowledgeBase.id(), question, response);
+```
+
+保存逻辑：
+
+```java
+askRecordRepository.save(new AskRecord(
+        UUID.randomUUID().toString(),
+        knowledgeBaseId,
+        question,
+        response.answer(),
+        response.answerProvider(),
+        response.sources().size(),
+        Instant.now()
+));
+```
+
+注意：即使没有检索到 sources，也会保存历史。
+
+这样后续你可以看到哪些问题没有命中知识库内容。
+
+### 新增查询接口
+
+Controller 新增：
+
+```java
+@GetMapping("/{knowledgeBaseId}/ask-records")
+public List<AskRecordSummary> listAskRecords(@PathVariable String knowledgeBaseId) {
+    return knowledgeService.listAskRecords(knowledgeBaseId);
+}
+```
+
+前端调用：
+
+```text
+GET /api/knowledge-bases/{knowledgeBaseId}/ask-records
+```
+
+### 前端如何展示
+
+前端新增类型：
+
+```ts
+export interface AskRecordSummary {
+  id: string
+  question: string
+  answer: string
+  answerProvider: string
+  sourceCount: number
+  createdAt: string
+}
+```
+
+Pinia store 新增：
+
+```ts
+const askRecords = ref<AskRecordSummary[]>([])
+```
+
+每次：
+
+- 加载知识库后加载历史。
+- 切换知识库后加载历史。
+- 提问成功后刷新历史。
+
+页面上展示最近问题，点击历史问题会把问题重新填回输入框。
+
+### 本节你需要掌握的知识
+
+- 用户行为数据通常需要单独建表。
+- 表设计要围绕业务概念，不要什么都塞进一个表。
+- Spring Data JPA 可以通过方法名生成简单查询。
+- 后端内部模型和前端 DTO 即使相似，也可以保持分离。
+- 前端历史记录适合放在 Pinia，因为多个页面或组件后续可能复用。
+- AI 应用除了模型能力，也需要管理用户交互数据。

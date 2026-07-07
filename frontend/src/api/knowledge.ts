@@ -42,6 +42,15 @@ export interface DocumentChunkSummary {
   charEnd: number
 }
 
+export interface AskRecordSummary {
+  id: string
+  question: string
+  answer: string
+  answerProvider: string
+  sourceCount: number
+  createdAt: string
+}
+
 export async function listKnowledgeBases() {
   const { data } = await http.get<KnowledgeBaseSummary[]>('/knowledge-bases')
   return data
@@ -56,6 +65,13 @@ export async function askKnowledgeBase(knowledgeBaseId: string, question: string
   const { data } = await http.post<AskKnowledgeResponse>(
     `/knowledge-bases/${knowledgeBaseId}/ask`,
     { question },
+  )
+  return data
+}
+
+export async function listAskRecords(knowledgeBaseId: string) {
+  const { data } = await http.get<AskRecordSummary[]>(
+    `/knowledge-bases/${knowledgeBaseId}/ask-records`,
   )
   return data
 }

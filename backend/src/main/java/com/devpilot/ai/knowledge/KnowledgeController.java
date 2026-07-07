@@ -49,6 +49,12 @@ public class KnowledgeController {
         return knowledgeService.ask(knowledgeBaseId, request.question());
     }
 
+    // GET /api/knowledge-bases/{id}/ask-records：查询最近的问答历史。
+    @GetMapping("/{knowledgeBaseId}/ask-records")
+    public List<AskRecordSummary> listAskRecords(@PathVariable String knowledgeBaseId) {
+        return knowledgeService.listAskRecords(knowledgeBaseId);
+    }
+
     // GET /api/knowledge-bases/{id}/documents：查询某个知识库下的文档列表。
     @GetMapping("/{knowledgeBaseId}/documents")
     public List<KnowledgeDocumentSummary> listDocuments(@PathVariable String knowledgeBaseId) {
