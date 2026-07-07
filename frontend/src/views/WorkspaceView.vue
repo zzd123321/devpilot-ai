@@ -125,10 +125,19 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
           <p class="answer">{{ store.latestAnswer.answer }}</p>
           <div class="sources">
             <h3>Sources</h3>
-            <article v-for="source in store.latestAnswer.sources" :key="source.documentName" class="source">
-              <strong>{{ source.documentName }}</strong>
+            <article v-for="source in store.latestAnswer.sources" :key="source.chunkId" class="source">
+              <div class="source-heading">
+                <strong>{{ source.documentName }}</strong>
+                <span>Chunk #{{ source.chunkIndex + 1 }}</span>
+              </div>
               <p>{{ source.snippet }}</p>
-              <span>Score {{ source.score }}</span>
+              <div class="source-meta">
+                <span>Score {{ source.score }}</span>
+                <span>{{ source.charStart }}-{{ source.charEnd }}</span>
+              </div>
+              <div v-if="source.matchedTerms.length" class="matched-terms">
+                <span v-for="term in source.matchedTerms" :key="term">{{ term }}</span>
+              </div>
             </article>
           </div>
         </template>

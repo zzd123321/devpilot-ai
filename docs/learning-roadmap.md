@@ -333,6 +333,7 @@ http://localhost:8080/api/health
 - [x] 为文档增加处理状态
 - [x] 实现文档异步处理与前端轮询
 - [x] 实现文档 chunk 预览
+- [x] 增强问答 sources 的检索调试信息
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3489,3 +3490,157 @@ chunks 内容可能比较长。如果每次加载文档列表都把所有 chunks
 - 前端列表页不一定要一次加载所有详情。
 - “点击后再加载详情”叫懒加载，能减少初始请求负担。
 - chunk 预览是 RAG 调试能力的一部分。
+
+## 学习笔记 13：检索调试信息
+
+本节目标：增强问答接口返回的 `sources`，让我们能看到每个检索结果来自哪个 chunk、分数是多少、命中了哪些关键词。
+
+### 为什么 sources 不只返回文本摘要
+
+上一版 sources 只有：
+
+```json
+{
+  "documentName": "demo.md",
+  "snippet": "...",
+  "score": 12
+}
+```
+
+这能展示“系统找到了什么”，但不够解释“为什么找到它”。
+
+调试 RAG 时，我们通常还想知道：
+
+- 命中的是第几个 chunk。
+- 这个 chunk 在原文里的字符范围。
+- 检索分数是多少。
+- 哪些关键词命中了它。
+- 后续能不能定位到完整 chunk。
+
+所以本次把 `SourceReference` 扩展成：
+
+```java
+public record SourceReference(
+        String documentId,
+        String documentName,
+        String chunkId,
+        int chunkIndex,
+        int charStart,
+        int charEnd,
+        String snippet,
+        double score,
+        List<String> matchedTerms
+) {
+}
+```
+
+### score 和 matchedTerms 的关系
+
+现在简单关键词检索的核心逻辑是：
+
+```java
+private ChunkScore scoreChunk(DocumentChunk chunk, Set<String> terms) {
+    String content = chunk.content().toLowerCase(Locale.ROOT);
+    double score = 0;
+    List<String> matchedTerms = new ArrayList<>();
+
+    for (String term : terms) {
+        if (content.contains(term)) {
+            score += Math.min(term.length(), 8);
+            matchedTerms.add(term);
+        }
+    }
+
+    return new ChunkScore(score, matchedTerms);
+}
+```
+
+这段代码做了两件事：
+
+- `score`：用于排序，分数越高越靠前。
+- `matchedTerms`：用于解释，告诉我们哪些词导致这个 chunk 被命中。
+
+这就是“可解释检索”的雏形。
+
+### 为什么要新增 ChunkScore
+
+以前 `scoreChunk` 只返回一个数字：
+
+```java
+double score
+```
+
+现在它需要同时返回：
+
+```text
+score
+matchedTerms
+```
+
+所以新增了一个小 record：
+
+```java
+private record ChunkScore(double score, List<String> matchedTerms) {
+}
+```
+
+record 很适合表达这种“小型不可变数据包”。
+
+### 前端如何展示调试信息
+
+前端 `AskKnowledgeResponse` 的 source 类型同步扩展：
+
+```ts
+sources: Array<{
+  documentId: string
+  documentName: string
+  chunkId: string
+  chunkIndex: number
+  charStart: number
+  charEnd: number
+  snippet: string
+  score: number
+  matchedTerms: string[]
+}>
+```
+
+页面展示时，每个 source 现在会显示：
+
+```text
+文档名
+Chunk #n
+摘要
+Score
+字符范围
+命中的关键词
+```
+
+这样你提问后可以观察：
+
+- 系统是不是命中了你预期的文档。
+- 命中的 chunk 是否包含真正有用的信息。
+- 分数高的 chunk 是否真的更相关。
+- 中文双字词是否造成了误命中。
+
+### 这和真正向量检索有什么关系
+
+当前还是关键词检索，`matchedTerms` 很容易解释。
+
+后续换成向量检索后，source 里仍然应该保留调试信息，只是字段会变成：
+
+```text
+similarity
+embeddingModel
+distance
+rank
+```
+
+也就是说，调试 sources 的结构不会白做。它会从“关键词检索解释”自然升级成“向量检索解释”。
+
+### 本节你需要掌握的知识
+
+- RAG 系统不只要能回答，还要能解释引用来源。
+- source DTO 应该包含足够的定位信息，比如 documentId、chunkId、chunkIndex。
+- score 用来排序，matchedTerms 用来解释。
+- 后端可以用小 record 包装中间计算结果。
+- 前端展示调试信息能帮助发现检索质量问题。

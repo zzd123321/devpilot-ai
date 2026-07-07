@@ -9,9 +9,15 @@ export interface KnowledgeBaseSummary {
 export interface AskKnowledgeResponse {
   answer: string
   sources: Array<{
+    documentId: string
     documentName: string
+    chunkId: string
+    chunkIndex: number
+    charStart: number
+    charEnd: number
     snippet: string
     score: number
+    matchedTerms: string[]
   }>
 }
 

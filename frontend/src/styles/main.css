@@ -256,15 +256,55 @@ h1 {
   padding: 12px;
 }
 
+.source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-heading span {
+  color: #69756b;
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
 .source p {
   color: #526056;
   margin: 8px 0;
 }
 
-.source span {
+.source-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.source-meta span {
   color: #176b5f;
   font-size: 13px;
   font-weight: 700;
+}
+
+.matched-terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.matched-terms span {
+  border-radius: 999px;
+  background: #eef0f4;
+  color: #526056;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 7px;
 }
 
 .document-list {

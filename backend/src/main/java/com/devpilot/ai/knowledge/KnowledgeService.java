@@ -3,6 +3,7 @@ package com.devpilot.ai.knowledge;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -212,17 +213,19 @@ public class KnowledgeService {
         });
     }
 
-    private double scoreChunk(DocumentChunk chunk, Set<String> terms) {
+    private ChunkScore scoreChunk(DocumentChunk chunk, Set<String> terms) {
         String content = chunk.content().toLowerCase(Locale.ROOT);
         double score = 0;
+        List<String> matchedTerms = new ArrayList<>();
 
         for (String term : terms) {
             if (content.contains(term)) {
                 score += Math.min(term.length(), 8);
+                matchedTerms.add(term);
             }
         }
 
-        return score;
+        return new ChunkScore(score, matchedTerms);
     }
 
     private SourceReference toSourceReference(ScoredChunk scoredChunk) {
@@ -232,9 +235,15 @@ public class KnowledgeService {
                 .orElse("Unknown document");
 
         return new SourceReference(
+                chunk.documentId(),
                 documentName,
+                chunk.id(),
+                chunk.chunkIndex(),
+                chunk.charStart(),
+                chunk.charEnd(),
                 snippet(chunk.content()),
-                scoredChunk.score()
+                scoredChunk.score(),
+                scoredChunk.matchedTerms()
         );
     }
 
@@ -280,6 +289,16 @@ public class KnowledgeService {
         }
     }
 
-    private record ScoredChunk(DocumentChunk chunk, double score) {
+    private record ChunkScore(double score, List<String> matchedTerms) {
+    }
+
+    private record ScoredChunk(DocumentChunk chunk, ChunkScore chunkScore) {
+        private double score() {
+            return chunkScore.score();
+        }
+
+        private List<String> matchedTerms() {
+            return chunkScore.matchedTerms();
+        }
     }
 }
