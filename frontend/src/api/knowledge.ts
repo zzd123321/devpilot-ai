@@ -8,6 +8,7 @@ export interface KnowledgeBaseSummary {
 
 export interface AskKnowledgeResponse {
   answer: string
+  answerProvider: string
   promptPreview: string
   sources: Array<{
     documentId: string

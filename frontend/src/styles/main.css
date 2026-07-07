@@ -239,6 +239,17 @@ h1 {
   line-height: 1.7;
 }
 
+.answer-provider {
+  display: inline-flex;
+  border-radius: 999px;
+  background: #eef0f4;
+  color: #526056;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  padding: 5px 8px;
+}
+
 .sources {
   border-top: 1px solid #e2e8db;
   margin-top: 22px;

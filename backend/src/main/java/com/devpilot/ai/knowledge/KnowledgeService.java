@@ -1,5 +1,8 @@
 package com.devpilot.ai.knowledge;
 
+import com.devpilot.ai.chat.ChatAnswer;
+import com.devpilot.ai.chat.ChatAnswerClient;
+import com.devpilot.ai.chat.ChatAnswerRequest;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -23,6 +26,7 @@ public class KnowledgeService {
     private final KnowledgeDocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
     private final DocumentProcessingService documentProcessingService;
+    private final ChatAnswerClient chatAnswerClient;
 
     // Service 依赖的是我们自己定义的 Repository 接口，而不是直接依赖 Spring Data JPA。
     // 这样以后从 H2/PostgreSQL 换成别的存储方案时，业务层改动会更小。
@@ -30,12 +34,14 @@ public class KnowledgeService {
             KnowledgeRepository knowledgeRepository,
             KnowledgeDocumentRepository documentRepository,
             DocumentChunkRepository chunkRepository,
-            DocumentProcessingService documentProcessingService
+            DocumentProcessingService documentProcessingService,
+            ChatAnswerClient chatAnswerClient
     ) {
         this.knowledgeRepository = knowledgeRepository;
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
         this.documentProcessingService = documentProcessingService;
+        this.chatAnswerClient = chatAnswerClient;
     }
 
     public List<KnowledgeBaseSummary> listKnowledgeBases() {
@@ -65,6 +71,7 @@ public class KnowledgeService {
         if (scoredChunks.isEmpty()) {
             return new AskKnowledgeResponse(
                     "当前知识库还没有检索到相关片段。你可以先上传 Markdown 或文本文件，再重新提问。",
+                    "none",
                     "",
                     List.of()
             );
@@ -74,10 +81,11 @@ public class KnowledgeService {
                 .map(this::toSourceReference)
                 .toList();
         String promptPreview = buildPromptPreview(question, scoredChunks);
+        ChatAnswer chatAnswer = chatAnswerClient.generate(new ChatAnswerRequest(question, promptPreview, sources));
 
         return new AskKnowledgeResponse(
-                "我先用关键词检索找到了 %d 个相关片段。下一步接入 AI 后，会把这些片段作为上下文生成自然语言回答。"
-                        .formatted(sources.size()),
+                chatAnswer.content(),
+                chatAnswer.provider(),
                 promptPreview,
                 sources
         );

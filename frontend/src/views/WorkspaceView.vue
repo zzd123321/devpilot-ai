@@ -122,6 +122,9 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
           Your first AI answer will appear here.
         </p>
         <template v-else>
+          <div class="answer-provider">
+            Answer provider: {{ store.latestAnswer.answerProvider }}
+          </div>
           <p class="answer">{{ store.latestAnswer.answer }}</p>
           <div class="sources">
             <h3>Sources</h3>

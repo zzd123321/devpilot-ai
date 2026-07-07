@@ -4,6 +4,7 @@ import java.util.List;
 
 public record AskKnowledgeResponse(
         String answer,
+        String answerProvider,
         String promptPreview,
         List<SourceReference> sources
 ) {

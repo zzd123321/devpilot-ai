@@ -335,6 +335,7 @@ http://localhost:8080/api/health
 - [x] 实现文档 chunk 预览
 - [x] 增强问答 sources 的检索调试信息
 - [x] 实现 RAG Prompt 组装预览
+- [x] 增加可替换的本地 Mock AI 回答层
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3818,3 +3819,165 @@ Prompt Preview
 - promptPreview 是调试字段，不是最终业务答案。
 - 接 AI 前先看 prompt，可以大幅降低排查难度。
 - 一个 AI 应用的问题经常不在模型，而在检索结果或 prompt 组织。
+
+## 学习笔记 15：可替换的本地 Mock AI 回答层
+
+本节目标：先不接真实大模型，而是做一个可替换的 AI 回答接口，默认使用本地 Mock 实现。
+
+### 为什么不直接在 KnowledgeService 里写 AI 调用
+
+如果把 AI 调用直接写在 `KnowledgeService.ask` 里面，后续会变成这样：
+
+```text
+KnowledgeService
+  -> 查知识库
+  -> 检索 chunks
+  -> 拼 prompt
+  -> 调 OpenAI
+  -> 处理异常
+  -> 解析模型结果
+  -> 返回前端
+```
+
+这样 `KnowledgeService` 会越来越重。
+
+更好的方式是把“生成回答”抽成接口：
+
+```java
+public interface ChatAnswerClient {
+    ChatAnswer generate(ChatAnswerRequest request);
+}
+```
+
+`KnowledgeService` 只关心：
+
+```text
+我已经有 question、prompt、sources
+请帮我生成一个 answer
+```
+
+至于这个 answer 来自哪里，交给 `ChatAnswerClient` 的实现类决定。
+
+### 新增的几个类
+
+本次新增：
+
+```text
+backend/src/main/java/com/devpilot/ai/chat/ChatAnswerClient.java
+backend/src/main/java/com/devpilot/ai/chat/ChatAnswerRequest.java
+backend/src/main/java/com/devpilot/ai/chat/ChatAnswer.java
+backend/src/main/java/com/devpilot/ai/chat/LocalMockChatAnswerClient.java
+```
+
+职责分别是：
+
+- `ChatAnswerClient`：回答生成接口。
+- `ChatAnswerRequest`：传给回答层的数据，包括 question、prompt、sources。
+- `ChatAnswer`：回答层返回的数据，包括 provider 和 content。
+- `LocalMockChatAnswerClient`：本地 mock 实现，不联网，不需要 API Key。
+
+### 为什么这个设计适合初学者
+
+你现在没有 Docker、PostgreSQL，也未必马上准备好 OpenAI API Key。
+
+如果一开始就依赖真实 AI 服务，学习会被很多外部因素打断：
+
+- API Key 配置。
+- 网络问题。
+- 额度问题。
+- SDK 版本问题。
+- 模型返回格式问题。
+
+本地 Mock AI 的好处是：
+
+- 项目随时能跑。
+- 可以先练清楚后端分层。
+- 可以先验证 RAG 数据流。
+- 后续接真模型时改动范围更小。
+
+### 当前配置
+
+`application.yml` 中新增：
+
+```yaml
+devpilot:
+  ai:
+    provider: mock
+```
+
+当前只有 `mock` 实现。
+
+后续我们可以扩展成：
+
+```yaml
+devpilot:
+  ai:
+    provider: openai
+```
+
+然后新增一个 `OpenAiChatAnswerClient`。
+
+### KnowledgeService 如何调用
+
+现在 `KnowledgeService` 注入的是接口：
+
+```java
+private final ChatAnswerClient chatAnswerClient;
+```
+
+而不是具体类：
+
+```java
+private final LocalMockChatAnswerClient chatAnswerClient;
+```
+
+这叫“面向接口编程”。
+
+调用流程变成：
+
+```java
+String promptPreview = buildPromptPreview(question, scoredChunks);
+ChatAnswer chatAnswer = chatAnswerClient.generate(new ChatAnswerRequest(question, promptPreview, sources));
+```
+
+最后返回：
+
+```java
+return new AskKnowledgeResponse(
+        chatAnswer.content(),
+        chatAnswer.provider(),
+        promptPreview,
+        sources
+);
+```
+
+### 前端为什么显示 answerProvider
+
+`AskKnowledgeResponse` 新增：
+
+```java
+String answerProvider
+```
+
+前端会显示：
+
+```text
+Answer provider: mock
+```
+
+这样你可以清楚知道当前回答来自本地 mock，而不是误以为已经调用真实大模型。
+
+以后切换到真实模型时，这里可能显示：
+
+```text
+Answer provider: openai
+```
+
+### 这一步的后端知识点
+
+- 外部服务调用应该抽象成接口。
+- 业务层依赖接口，不依赖具体供应商。
+- Mock 实现能降低本地开发门槛。
+- 配置项可以控制当前使用哪种 provider。
+- DTO 可以带 provider 信息，方便前端和调试。
+- 先把本地链路跑通，再接真实外部服务，是更稳的工程节奏。
