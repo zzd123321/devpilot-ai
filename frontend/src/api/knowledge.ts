@@ -26,6 +26,14 @@ export interface KnowledgeDocumentSummary {
   chunkCount: number
 }
 
+export interface DocumentChunkSummary {
+  id: string
+  chunkIndex: number
+  content: string
+  charStart: number
+  charEnd: number
+}
+
 export async function listKnowledgeBases() {
   const { data } = await http.get<KnowledgeBaseSummary[]>('/knowledge-bases')
   return data
@@ -47,6 +55,13 @@ export async function askKnowledgeBase(knowledgeBaseId: string, question: string
 export async function listKnowledgeDocuments(knowledgeBaseId: string) {
   const { data } = await http.get<KnowledgeDocumentSummary[]>(
     `/knowledge-bases/${knowledgeBaseId}/documents`,
+  )
+  return data
+}
+
+export async function listDocumentChunks(knowledgeBaseId: string, documentId: string) {
+  const { data } = await http.get<DocumentChunkSummary[]>(
+    `/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks`,
   )
   return data
 }

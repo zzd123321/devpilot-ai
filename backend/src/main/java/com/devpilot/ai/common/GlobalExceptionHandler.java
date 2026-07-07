@@ -2,6 +2,7 @@ package com.devpilot.ai.common;
 
 import com.devpilot.ai.knowledge.KnowledgeBaseNotFoundException;
 import com.devpilot.ai.knowledge.InvalidDocumentException;
+import com.devpilot.ai.knowledge.KnowledgeDocumentNotFoundException;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -18,6 +19,17 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleKnowledgeBaseNotFound(KnowledgeBaseNotFoundException exception) {
         ApiErrorResponse response = new ApiErrorResponse(
                 "KNOWLEDGE_BASE_NOT_FOUND",
+                exception.getMessage(),
+                Instant.now(),
+                List.of()
+        );
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    }
+
+    @ExceptionHandler(KnowledgeDocumentNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleKnowledgeDocumentNotFound(KnowledgeDocumentNotFoundException exception) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                "KNOWLEDGE_DOCUMENT_NOT_FOUND",
                 exception.getMessage(),
                 Instant.now(),
                 List.of()

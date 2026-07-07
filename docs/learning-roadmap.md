@@ -332,6 +332,7 @@ http://localhost:8080/api/health
 - [x] 实现关键词检索版问答来源返回
 - [x] 为文档增加处理状态
 - [x] 实现文档异步处理与前端轮询
+- [x] 实现文档 chunk 预览
 
 ## 学习笔记 01：前后端请求链路
 
@@ -3317,3 +3318,174 @@ function scheduleProcessingPollIfNeeded() {
 - 后台任务最好传 ID，再自己查数据库。
 - 异步任务要注意事务提交时机。
 - 前端面对后台任务时，通常需要轮询、SSE 或 WebSocket 来刷新状态。
+
+## 学习笔记 12：文档 Chunk 预览
+
+本节目标：新增一个接口和页面区域，让我们能查看某篇文档被切成了哪些 chunks。
+
+### 为什么要做 chunk 预览
+
+RAG 的核心不是“把整篇文档直接塞给模型”，而是：
+
+```text
+用户提问
+  -> 检索相关 chunks
+  -> 把相关 chunks 拼进 Prompt
+  -> 调用模型生成回答
+```
+
+所以 chunk 的质量会直接影响最终回答。
+
+如果切分结果不可见，我们就很难判断：
+
+- chunk 是否太长。
+- chunk 是否太短。
+- 关键信息是否被切断。
+- overlap 是否保留了足够上下文。
+- 后续检索结果为什么命中或没命中。
+
+做 chunk 预览，就是给 RAG 系统加一个调试窗口。
+
+### 后端新增接口
+
+新增接口：
+
+```text
+GET /api/knowledge-bases/{knowledgeBaseId}/documents/{documentId}/chunks
+```
+
+这个路径表示：
+
+- chunks 属于某个 document。
+- document 又属于某个 knowledge base。
+- 所以这是一个嵌套资源查询。
+
+Controller 代码：
+
+```java
+@GetMapping("/{knowledgeBaseId}/documents/{documentId}/chunks")
+public List<DocumentChunkSummary> listDocumentChunks(
+        @PathVariable String knowledgeBaseId,
+        @PathVariable String documentId
+) {
+    return knowledgeService.listDocumentChunks(knowledgeBaseId, documentId);
+}
+```
+
+Controller 只负责接 HTTP 参数，然后转给 Service。
+
+### 为什么要校验文档归属
+
+Service 中有一段关键逻辑：
+
+```java
+KnowledgeDocument document = documentRepository.findById(documentId)
+        .filter(item -> item.knowledgeBaseId().equals(knowledgeBaseId))
+        .orElseThrow(() -> new KnowledgeDocumentNotFoundException(documentId));
+```
+
+它做了两件事：
+
+1. 文档必须存在。
+2. 文档必须属于当前知识库。
+
+如果只根据 `documentId` 查询 chunks，而不校验 `knowledgeBaseId`，以后有权限系统后就可能出现跨知识库读取数据的问题。
+
+这是后端安全设计里很常见的原则：子资源查询不能只校验子资源 ID，还要校验父资源归属。
+
+### 为什么新增 DocumentChunkSummary
+
+新增 DTO：
+
+```java
+public record DocumentChunkSummary(
+        String id,
+        int chunkIndex,
+        String content,
+        int charStart,
+        int charEnd
+) {
+}
+```
+
+我们没有直接把 `DocumentChunk` 返回给前端。
+
+原因是：
+
+- DTO 是前后端契约。
+- Entity 或领域对象是后端内部模型。
+- 前端只需要展示 chunk 顺序、内容和字符范围，不需要知道所有内部字段。
+
+现在看起来字段差不多，但分开后更容易维护。
+
+### 前端 API 和 Store
+
+前端新增接口类型：
+
+```ts
+export interface DocumentChunkSummary {
+  id: string
+  chunkIndex: number
+  content: string
+  charStart: number
+  charEnd: number
+}
+```
+
+新增请求函数：
+
+```ts
+export async function listDocumentChunks(knowledgeBaseId: string, documentId: string) {
+  const { data } = await http.get<DocumentChunkSummary[]>(
+    `/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks`,
+  )
+  return data
+}
+```
+
+Store 中新增状态：
+
+```ts
+const selectedDocumentId = ref<string | null>(null)
+const selectedDocumentChunks = ref<DocumentChunkSummary[]>([])
+const loadingChunks = ref(false)
+```
+
+这里的职责划分是：
+
+- 页面负责响应点击。
+- Store 负责记录选中文档。
+- Store 负责调用 API 加载 chunks。
+- 页面负责展示 chunks。
+
+### 为什么点击文档后才加载 chunks
+
+文档列表只展示基础信息：
+
+```text
+filename
+status
+chunkCount
+size
+```
+
+chunks 内容可能比较长。如果每次加载文档列表都把所有 chunks 一起返回，会让接口变重。
+
+所以我们采用懒加载：
+
+```text
+加载文档列表
+  -> 用户点击某个 READY 文档
+  -> 再请求这个文档的 chunks
+```
+
+这是一种很常见的前端性能设计。
+
+### 本节你需要掌握的知识
+
+- REST 接口可以表达嵌套资源。
+- 子资源查询要校验父资源归属。
+- DTO 用来稳定前后端契约，不要随便暴露内部模型。
+- 前端列表页不一定要一次加载所有详情。
+- “点击后再加载详情”叫懒加载，能减少初始请求负担。
+- chunk 预览是 RAG 调试能力的一部分。

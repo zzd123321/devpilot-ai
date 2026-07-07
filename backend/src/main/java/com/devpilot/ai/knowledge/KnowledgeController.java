@@ -55,6 +55,15 @@ public class KnowledgeController {
         return knowledgeService.listDocuments(knowledgeBaseId);
     }
 
+    // GET /api/knowledge-bases/{id}/documents/{documentId}/chunks：查看文档切分后的片段。
+    @GetMapping("/{knowledgeBaseId}/documents/{documentId}/chunks")
+    public List<DocumentChunkSummary> listDocumentChunks(
+            @PathVariable String knowledgeBaseId,
+            @PathVariable String documentId
+    ) {
+        return knowledgeService.listDocumentChunks(knowledgeBaseId, documentId);
+    }
+
     // 文件上传不是 JSON 请求，而是 multipart/form-data；Spring 用 MultipartFile 接收文件。
     @PostMapping("/{knowledgeBaseId}/documents")
     public ResponseEntity<KnowledgeDocumentSummary> uploadDocument(

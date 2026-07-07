@@ -4,10 +4,12 @@ import { getApiErrorMessage } from '@/api/http'
 import {
   askKnowledgeBase,
   createKnowledgeBase,
+  listDocumentChunks,
   listKnowledgeDocuments,
   listKnowledgeBases,
   uploadKnowledgeDocument,
   type AskKnowledgeResponse,
+  type DocumentChunkSummary,
   type KnowledgeDocumentSummary,
   type KnowledgeBaseSummary,
 } from '@/api/knowledge'
@@ -22,6 +24,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const errorMessage = ref<string | null>(null)
   const latestAnswer = ref<AskKnowledgeResponse | null>(null)
   const documents = ref<KnowledgeDocumentSummary[]>([])
+  const selectedDocumentId = ref<string | null>(null)
+  const selectedDocumentChunks = ref<DocumentChunkSummary[]>([])
+  const loadingChunks = ref(false)
   let processingPollTimer: number | null = null
 
   async function loadKnowledgeBases() {
@@ -43,6 +48,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
     try {
       documents.value = await listKnowledgeDocuments(currentKnowledgeBaseId.value)
+      syncSelectedDocument()
       scheduleProcessingPollIfNeeded()
     } catch (error) {
       errorMessage.value = getApiErrorMessage(error)
@@ -69,6 +75,8 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       await loadKnowledgeBases()
       currentKnowledgeBaseId.value = knowledgeBase.id
       documents.value = []
+      selectedDocumentId.value = null
+      selectedDocumentChunks.value = []
       latestAnswer.value = null
       return true
     } catch (error) {
@@ -99,6 +107,59 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
+  async function selectDocument(document: KnowledgeDocumentSummary) {
+    selectedDocumentId.value = document.id
+    selectedDocumentChunks.value = []
+
+    if (document.processingStatus !== 'READY') {
+      return
+    }
+
+    await loadSelectedDocumentChunks()
+  }
+
+  async function loadSelectedDocumentChunks() {
+    if (!currentKnowledgeBaseId.value || !selectedDocumentId.value) {
+      selectedDocumentChunks.value = []
+      return
+    }
+
+    loadingChunks.value = true
+    errorMessage.value = null
+    try {
+      selectedDocumentChunks.value = await listDocumentChunks(
+        currentKnowledgeBaseId.value,
+        selectedDocumentId.value,
+      )
+    } catch (error) {
+      errorMessage.value = getApiErrorMessage(error)
+    } finally {
+      loadingChunks.value = false
+    }
+  }
+
+  function syncSelectedDocument() {
+    if (!selectedDocumentId.value) {
+      return
+    }
+
+    const selectedDocument = documents.value.find((document) => document.id === selectedDocumentId.value)
+    if (!selectedDocument) {
+      selectedDocumentId.value = null
+      selectedDocumentChunks.value = []
+      return
+    }
+
+    if (selectedDocument.processingStatus !== 'READY') {
+      selectedDocumentChunks.value = []
+      return
+    }
+
+    if (!selectedDocumentChunks.value.length) {
+      void loadSelectedDocumentChunks()
+    }
+  }
+
   function scheduleProcessingPollIfNeeded() {
     if (!documents.value.some((document) => document.processingStatus === 'PROCESSING')) {
       return
@@ -124,10 +185,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     errorMessage,
     latestAnswer,
     documents,
+    selectedDocumentId,
+    selectedDocumentChunks,
+    loadingChunks,
     loadKnowledgeBases,
     loadDocuments,
     ask,
     create,
     uploadDocument,
+    selectDocument,
   }
 })

@@ -11,6 +11,9 @@ const selectedFile = ref<File | null>(null)
 const selectedKnowledgeBase = computed(() =>
   store.knowledgeBases.find((item) => item.id === store.currentKnowledgeBaseId),
 )
+const selectedDocument = computed(() =>
+  store.documents.find((document) => document.id === store.selectedDocumentId),
+)
 
 onMounted(() => {
   void store.loadKnowledgeBases()
@@ -150,7 +153,14 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
           Upload a Markdown or text file to start building this knowledge base.
         </p>
         <div v-else class="document-list">
-          <article v-for="document in store.documents" :key="document.id" class="document-item">
+          <button
+            v-for="document in store.documents"
+            :key="document.id"
+            type="button"
+            class="document-item document-item-button"
+            :class="{ 'document-item-active': document.id === store.selectedDocumentId }"
+            @click="store.selectDocument(document)"
+          >
             <div>
               <div class="document-title-row">
                 <strong>{{ document.filename }}</strong>
@@ -164,6 +174,38 @@ function formatProcessingStatus(status: 'PROCESSING' | 'READY' | 'FAILED') {
               <p v-else>{{ document.chunkCount }} chunks</p>
             </div>
             <span>{{ formatBytes(document.sizeBytes) }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="panel chunk-panel">
+        <div class="panel-heading">
+          <h2>Chunks</h2>
+          <span>{{ store.selectedDocumentChunks.length }} shown</span>
+        </div>
+
+        <p v-if="!selectedDocument" class="empty-state">
+          Select a ready document to inspect its chunks.
+        </p>
+        <p v-else-if="selectedDocument.processingStatus === 'PROCESSING'" class="empty-state">
+          This document is still processing.
+        </p>
+        <p v-else-if="selectedDocument.processingStatus === 'FAILED'" class="empty-state">
+          This document failed to process.
+        </p>
+        <p v-else-if="store.loadingChunks" class="empty-state">
+          Loading chunks...
+        </p>
+        <p v-else-if="!store.selectedDocumentChunks.length" class="empty-state">
+          No chunks found for this document.
+        </p>
+        <div v-else class="chunk-list">
+          <article v-for="chunk in store.selectedDocumentChunks" :key="chunk.id" class="chunk-item">
+            <div class="chunk-meta">
+              <strong>#{{ chunk.chunkIndex + 1 }}</strong>
+              <span>{{ chunk.charStart }}-{{ chunk.charEnd }}</span>
+            </div>
+            <p>{{ chunk.content }}</p>
           </article>
         </div>
       </div>

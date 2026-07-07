@@ -88,6 +88,19 @@ public class KnowledgeService {
                 .toList();
     }
 
+    public List<DocumentChunkSummary> listDocumentChunks(String knowledgeBaseId, String documentId) {
+        ensureKnowledgeBaseExists(knowledgeBaseId);
+        KnowledgeDocument document = documentRepository.findById(documentId)
+                .filter(item -> item.knowledgeBaseId().equals(knowledgeBaseId))
+                .orElseThrow(() -> new KnowledgeDocumentNotFoundException(documentId));
+
+        // PROCESSING 或 FAILED 文档可能还没有 chunks，直接返回空列表即可。
+        return chunkRepository.findAllByDocumentId(document.id())
+                .stream()
+                .map(this::toChunkSummary)
+                .toList();
+    }
+
     // 上传接口只负责保存原始文档和标记 PROCESSING，耗时的切分逻辑交给后台线程。
     @Transactional
     public KnowledgeDocumentSummary uploadDocument(String knowledgeBaseId, MultipartFile file) {
@@ -135,6 +148,16 @@ public class KnowledgeService {
                 document.processingError(),
                 document.createdAt(),
                 chunkRepository.countByDocumentId(document.id())
+        );
+    }
+
+    private DocumentChunkSummary toChunkSummary(DocumentChunk chunk) {
+        return new DocumentChunkSummary(
+                chunk.id(),
+                chunk.chunkIndex(),
+                chunk.content(),
+                chunk.charStart(),
+                chunk.charEnd()
         );
     }
 
